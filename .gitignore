@@ -30,3 +30,9 @@ Desktop.ini
 
 # runtime log (query text) — local only
 检修/calls.jsonl
+
+# 书 / 笔记 正本：只留本地，不 push（书是私产，笔记是私话）
+资料/书/*
+!资料/书/.gitkeep
+资料/笔记/*
+!资料/笔记/.gitkeep
