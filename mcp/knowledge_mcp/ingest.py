@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 import yaml
@@ -55,6 +56,60 @@ def slugify(name: str) -> str:
     return s[:60]
 
 
+JUNK_RE = re.compile(
+    r"(?:https?://\S+|www\.\S+"
+    r"|z-library\S*|1lib\S*|z-lib\S*|libgen\S*|annas-archive\S*"
+    r"|\.(?:epub|mobi|azw3?|pdf|djvu|txt)"
+    r"|\((?:[^()]*\.(?:sk|com|net|org|io|cn)[^()]*)\)"
+    r"|\[[^\[\]]*(?:www\.|https?://)\S*[^\[\]]*\])",
+    re.I,
+)
+
+
+def slug_base(name: str) -> str:
+    """原始文件名 -> 干净的 slug 候选（去掉来源水印/网址/扩展名）。"""
+    s = JUNK_RE.sub(" ", name.lower())
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"\(\s*\)|\[\s*\]|\{\s*\}", " ", s)
+    s = re.sub(r"\s*[=—–]+\s*", " ", s).strip(" ._-()[]{}")
+    return slugify(s) or f"book-{hashlib.sha1(name.encode('utf-8')).hexdigest()[:8]}"
+
+
+def safe_filename(name: str, limit: int = 60) -> str:
+    """标题 -> 能用、能看见的文件名。中文照留，只去文件系统不认的字符。"""
+    s = str(name).replace("\\", " ")
+    for ch in '/:*?"<>|':
+        s = s.replace(ch, " ")
+    s = re.sub(r"\s+", " ", s).strip(" .")
+    return s[:limit].strip(" .")
+
+
+def epub_title(src: Path) -> str | None:
+    """EPUB 自带的 dc:title。取不到就算了，不猜。"""
+    try:
+        with zipfile.ZipFile(src) as z:
+            for name in [n for n in z.namelist() if n.lower().endswith(".opf")]:
+                text = z.read(name).decode("utf-8", "replace")
+                m = re.search(r"<dc:title[^>]*>(.*?)</dc:title>", text, re.S | re.I)
+                if m:
+                    title = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+                    if title:
+                        return title
+    except (zipfile.BadZipFile, KeyError, OSError):
+        return None
+    return None
+
+
+BOILERPLATE_RE = re.compile(
+    r"^\s*(版权|copyright|扉页|书名页|题名页|colophon|title\s*page|copyright\s*page)",
+    re.I,
+)
+
+
+def looks_boilerplate(heading: str) -> bool:
+    return bool(BOILERPLATE_RE.match(heading.strip()))
+
+
 def uniquify(path: Path) -> Path:
     if not path.exists():
         return path
@@ -85,30 +140,71 @@ def _heads(lines: list[str], prefix: str) -> list[tuple[int, str]]:
     return out
 
 
-def split_markdown(text: str, fallback_title: str) -> tuple[str, list[tuple[str, str]]]:
+def _ordered_heads(lines: list[str]) -> list[tuple[int, str]]:
+    """所有一级/二级标题，按在原文里出现的先后排。"""
+    found = [(i, name) for i, name in _heads(lines, "# ")]
+    found += [(i, name) for i, name in _heads(lines, "## ")]
+    return sorted(found)
+
+
+def pick_title(candidates: list[str], fallback: str, meta_title: str | None) -> str:
+    """书名来源：书的元数据 > 书里的一级标题 > 原始文件名。
+
+    抬头只能来自书本身，不许编；版权/扉页这类不算书名。
+    """
+    if meta_title and meta_title.strip():
+        return meta_title.strip()
+    for c in candidates:
+        if c.strip() and not looks_boilerplate(c):
+            return c.strip()
+    return fallback
+
+
+def split_markdown(
+    text: str, fallback_title: str, *, meta_title: str | None = None
+) -> tuple[str, list[str], list[tuple[str, str]]]:
+    """切书，同时给出标题候选。
+
+    标题优先级：EPUB 元数据 dc:title -> 第一个不像版权页的一级标题 -> 原始文件名。
+    """
     lines = text.splitlines()
     h1 = _heads(lines, "# ")
     h2 = _heads(lines, "## ")
-    title = h1[0][1] if h1 else fallback_title
+    headings = [name for _, name in h1] or [name for _, name in h2]
+    candidates = headings + [fallback_title]
     cuts = h1 if len(h1) >= 2 else h2 if h2 else []
+    title = pick_title(candidates, fallback_title, meta_title)
+    parts: list[tuple[str, str]] = []
     if not cuts:
-        body = text if text.endswith("\n") else text + "\n"
-        return title, [(title, body)]
-    parts = []
-    for n, (i, name) in enumerate(cuts):
-        end = cuts[n + 1][0] if n + 1 < len(cuts) else len(lines)
-        body = "\n".join(lines[i:end]).strip() + "\n"
-        parts.append((name, body))
-    return title, parts
+        if h1:
+            body = text if text.endswith("\n") else text + "\n"
+            parts.append((h1[0][1], body))
+        else:
+            body = text if text.endswith("\n") else text + "\n"
+            parts.append((fallback_title, body))
+    else:
+        for n, (i, name) in enumerate(cuts):
+            end = cuts[n + 1][0] if n + 1 < len(cuts) else len(lines)
+            body = "\n".join(lines[i:end]).strip() + "\n"
+            parts.append((name, body))
+    return title, candidates, parts
 
 
-def first_intro(text: str, nchap: int) -> str:
-    for line in text.splitlines():
-        s = line.strip()
-        if not s or s.startswith("#") or re.match(r"\*\*[\w\s]+:\*\*", s):
-            continue
-        return s[:80]
-    return f"由源文件转换，含 {nchap} 章。"
+def first_intro(parts: list[tuple[str, str]], nchap: int, title: str | None = None) -> str:
+    """取几句介绍：从切好的块里挑第一块「除了标题还有正文」的。
+
+    版权页常常排在第一章，但它的正文只有 COPYRIGHT 这类字，不能拿来当介绍。
+    """
+    skip = {title.strip()} if title else set()
+    for name, body in parts:
+        if looks_boilerplate(name):
+            continue  # 版权/扉页整块跳过
+        for line in body.splitlines():
+            s = line.strip()
+            if not s or s.startswith("#") or s in skip or s == name.strip():
+                continue
+            return s[:80]
+    return f"由源文件转换，含 {nchap} 块。"
 
 
 def render_guide(title: str, intro: str, chapters: list[str], source: str) -> str:
@@ -143,11 +239,10 @@ def convert_one(src: Path) -> dict:
     with tempfile.TemporaryDirectory(prefix="kb-") as td:
         md_path = run_markitdown(src, Path(td))
         text = md_path.read_text(encoding="utf-8")
-    title, parts = split_markdown(text, src.stem)
-    base = slugify(src.stem) or slugify(title) or (
-        "book-" + hashlib.sha1(src.stem.encode("utf-8")).hexdigest()[:8]
+    title, _candidates, parts = split_markdown(
+        text, src.stem, meta_title=epub_title(src)
     )
-    slug = unique_slug(base)
+    slug = unique_slug(slug_base(src.stem))
     book_dir = dirs()["books"] / slug
     book_dir.mkdir(parents=True, exist_ok=True)
     names: list[str] = []
@@ -156,10 +251,10 @@ def convert_one(src: Path) -> dict:
         names = [parts[0][0]]
     else:
         for i, (name, body) in enumerate(parts, 1):
-            fn = f"{i:02d}-{slugify(name) or 'chapter'}.md"
+            fn = f"{i:02d}-{safe_filename(name) or f'第{i}章'}.md"
             (book_dir / fn).write_text(body, encoding="utf-8")
             names.append(name)
-    intro = first_intro(text, len(names))
+    intro = first_intro(parts, len(names), title)
     archive_dir = dirs()["archive"]
     archive_dir.mkdir(parents=True, exist_ok=True)
     archive_dest = uniquify(archive_dir / src.name)
