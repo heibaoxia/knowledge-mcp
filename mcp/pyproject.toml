@@ -1,0 +1,25 @@
+[project]
+name = "knowledge-mcp"
+version = "0.0.1"
+description = "Local MCP knowledge room for agents"
+requires-python = ">=3.11"
+dependencies = [
+  "fastmcp>=2.12,<5",
+  "pyyaml>=6",
+  "markitdown>=0.1.7",
+]
+
+[project.scripts]
+knowledge-mcp = "knowledge_mcp.server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["knowledge_mcp*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

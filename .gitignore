@@ -1,0 +1,32 @@
+# python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+dist/
+build/
+.env
+.env.*
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# binaries / inbox (keep folders)
+*.pdf
+*.epub
+*.mobi
+*.azw
+*.azw3
+*.djvu
+原始资料/*
+!原始资料/.gitkeep
+原始资料归档/*
+!原始资料归档/.gitkeep
+
+# runtime log (query text) — local only
+检修/calls.jsonl
