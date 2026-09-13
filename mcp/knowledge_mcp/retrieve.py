@@ -1,6 +1,7 @@
-"""Search headers only; read one named part with a char cap."""
+"""Search headers only; read named parts with a char cap."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -11,6 +12,12 @@ from knowledge_mcp.paths import dirs
 
 SEARCH_LIMIT = 5
 CHAR_CAP = 8000
+BATCH_LIMIT = 5
+TOTAL_CHAR_CAP = 24000
+CHAPTER_SUGGEST_LIMIT = 3
+UNREAD_HEAD = "\n未读（整次字数顶或超过 5 块，正文没给）：\n"
+PUNCT = r"\s,，.。;；:：!！?？、·—()（）\[\]【】"
+HAN = re.compile(r"[一-鿿]+")
 WEIGHTS = {"title": 4.0, "tags": 3.5, "intro": 2.5, "chapters": 2.0}
 
 
@@ -27,11 +34,17 @@ def split_frontmatter(text: str) -> tuple[dict, str]:
 
 
 def _tokens(query: str) -> list[str]:
+    """Whole sentence + pieces split on space/punctuation + two-char slices of han runs."""
     q = query.strip()
     out: list[str] = []
-    for t in [q, *q.split()]:
+    for t in [q, *re.split(f"[{PUNCT}]+", q)]:
         if t and t not in out:
             out.append(t)
+    for run in HAN.findall(q):
+        for i in range(len(run) - 1):
+            gram = run[i : i + 2]
+            if gram not in out:
+                out.append(gram)
     return out
 
 
@@ -68,8 +81,9 @@ def iter_headers() -> list[dict]:
     return rows
 
 
-def _score(item: dict, tokens: list[str]) -> tuple[float, list[str]]:
+def _score(item: dict, tokens: list[str]) -> tuple[float, list[str], list[str]]:
     why: list[str] = []
+    hits: list[str] = []
     total = 0.0
     fields = {
         "title": item["title"],
@@ -84,7 +98,9 @@ def _score(item: dict, tokens: list[str]) -> tuple[float, list[str]]:
         if hit:
             total += WEIGHTS[key] * len(hit)
             why.append(f"{labels[key]}含「{'、'.join(hit)}」")
-    return total, why
+        if key == "chapters":
+            hits = [c for c in item["chapters"] if any(t.lower() in c.lower() for t in tokens)]
+    return total, why, hits[:CHAPTER_SUGGEST_LIMIT]
 
 
 @guarded("kb_search")
@@ -95,11 +111,11 @@ def search(query: str) -> str:
         log_call("kb_search", False, step="输入")
         return out
     tokens = _tokens(q)
-    ranked: list[tuple[float, dict, list[str]]] = []
+    ranked: list[tuple[float, dict, list[str], list[str]]] = []
     for item in iter_headers():
-        score, why = _score(item, tokens)
+        score, why, hits = _score(item, tokens)
         if score > 0:
-            ranked.append((score, item, why))
+            ranked.append((score, item, why, hits))
     ranked.sort(key=lambda r: r[0], reverse=True)
     top = ranked[:SEARCH_LIMIT]
     if not top:
@@ -107,9 +123,15 @@ def search(query: str) -> str:
         log_call("kb_search", True, hits=0, query=q)
         return out
     lines = [f"路标（最多 {SEARCH_LIMIT} 条，无正文）"]
-    for i, (_s, item, why) in enumerate(top, 1):
+    for i, (_s, item, why, hits) in enumerate(top, 1):
         lines.append(f"{i}. [{item['kind']}] {item['title'] or item['ident']}  身份：{item['ident']}")
         lines.append(f"   像在：{'；'.join(why)}")
+        if hits:
+            lines.append(f"   建议块（最多 {CHAPTER_SUGGEST_LIMIT} 个）：")
+            for c in hits:
+                lines.append(f"   · {item['ident']}/{c}")
+        elif item["kind"] == "书":
+            lines.append(f"   没有命中章（可点 {item['ident']}/导读）")
     out = "\n".join(lines) + "\n"
     log_call("kb_search", True, hits=len(top), query=q)
     return out
@@ -169,6 +191,24 @@ def _read_book(slug: str, part: str | None) -> str:
     )
 
 
+def _looks_whole_book(target: str) -> bool:
+    kind, slug, part = _parse_target(target)
+    return kind == "书" and bool(slug) and not part
+
+
+def _ident_of(target: str, part: str | None) -> str:
+    """Canonical identity for the call log: 书/<slug>/<章> or 笔记/<slug>; "" if unusable."""
+    kind, slug, extra = _parse_target(target)
+    if kind == "书":
+        use_part = part or extra
+        if not use_part or use_part in ("导读", "导读.md"):
+            use_part = "导读"
+        return f"书/{slug}/{use_part}"
+    if kind == "笔记":
+        return f"笔记/{slug}"
+    return ""
+
+
 def _read_note(slug: str) -> str:
     p = dirs()["notes"] / f"{slug}.md"
     if not p.is_file():
@@ -181,10 +221,76 @@ def _read_note(slug: str) -> str:
     return _cap(p.read_text(encoding="utf-8"))
 
 
+def _why_of(out: str) -> str:
+    for line in out.splitlines():
+        if line.startswith("为什么："):
+            return line[len("为什么：") :]
+    return ""
+
+
+def _read_one(ident: str) -> tuple[str, bool]:
+    """Read one identity without logging. Returns (text, ok)."""
+    kind, slug, extra = _parse_target(ident)
+    if not kind or not slug:
+        why = f"身份无法识别：{ident}。要 书/<slug>/<章> 或 笔记/<slug>。"
+        return fail("阅读-点名", why, "无", "先检索，用路标上的身份。不要说「把心理学全给我」。"), False
+    if kind == "书":
+        out = _read_book(slug, extra)
+    else:
+        out = _read_note(slug)
+    return out, not out.startswith("失败")
+
+
+def _read_many(targets: list[str]) -> str:
+    asked = len(targets)
+    if not asked or any(not (t or "").strip() for t in targets):
+        out = fail(
+            "阅读-点名",
+            "没有身份：清单是空的，或里面有没有身份的空项。",
+            "无",
+            "每个身份都要写明 书/<slug>/<章> 或 笔记/<slug>。",
+        )
+        log_call("kb_read", False, step="点名", asked=asked)
+        return out
+    if any(_looks_whole_book(t) for t in targets):
+        out = fail(
+            "阅读-点名",
+            "清单里出现一次要整本（只有 书/<slug>，没点名章或导读）。一次不能拿走整本。",
+            "无",
+            "每条都要点名：书/<slug>/<章>、书/<slug>/导读 或 笔记/<slug>。",
+        )
+        log_call("kb_read", False, step="点名", asked=asked)
+        return out
+    sections: list[str] = []
+    unread: list[str] = []
+    total = 0
+    for i, t in enumerate(targets):
+        ident = _ident_of(t, None) or t
+        if i >= BATCH_LIMIT:
+            unread.append(ident)
+            log_call("kb_read", False, target=ident, why="超过单次最多 5 块，未读")
+            continue
+        out, ok = _read_one(t)
+        if ok and total + len(out) > TOTAL_CHAR_CAP:
+            unread.append(ident)
+            log_call("kb_read", False, target=ident, why="超过整次字数顶，未读")
+            continue
+        sections.append(f"# {ident}\n{out}")
+        if ok:
+            total += len(out)
+        log_call("kb_read", ok, target=ident, why="" if ok else _why_of(out))
+    result = "\n".join(sections)
+    if unread:
+        result += UNREAD_HEAD + "\n".join(f"- {u}" for u in unread) + "\n"
+    return result
+
+
 @guarded("kb_read")
-def read(target: str, part: str | None = None) -> str:
-    target = (target or "").strip()
-    if not target:
+def read(target: str = "", part: str | None = None, targets: list[str] | None = None) -> str:
+    if targets is not None:
+        return _read_many(targets)
+    named = (target or "").strip()
+    if not named:
         out = fail(
             "阅读-点名",
             "没有身份。",
@@ -193,11 +299,11 @@ def read(target: str, part: str | None = None) -> str:
         )
         log_call("kb_read", False, step="点名")
         return out
-    kind, slug, extra = _parse_target(target)
+    kind, slug, extra = _parse_target(named)
     if not kind or not slug:
         out = fail(
             "阅读-点名",
-            f"身份无法识别：{target}。要 书/<slug> 或 笔记/<slug>。",
+            f"身份无法识别：{named}。要 书/<slug>/<章> 或 笔记/<slug>。",
             "无",
             "先检索，用路标上的身份。不要说「把心理学全给我」。",
         )
@@ -208,5 +314,8 @@ def read(target: str, part: str | None = None) -> str:
         out = _read_book(slug, use_part)
     else:
         out = _read_note(slug)
-    log_call("kb_read", not out.startswith("失败"), target=target, part=use_part or "")
+    if out.startswith("失败"):
+        log_call("kb_read", False, target=named, part=use_part or "", why=_why_of(out))
+    else:
+        log_call("kb_read", True, target=_ident_of(named, use_part))
     return out

@@ -144,3 +144,172 @@ def test_read_note_by_id(kb):
 
     out = read("笔记/my-delay", None)
     assert "只此一段" in out
+
+
+def test_search_bigram_hits_two_headers_without_spaces(kb):
+    plant_book(kb, "delay", "拖延心理学", "讲拖延从哪来。", ["第一章 为什么拖"], ["正文甲"])
+    plant_book(kb, "self", "自我控制", "讲自控从哪来。", ["第一章 怎么忍"], ["正文乙"])
+    from knowledge_mcp.retrieve import search
+
+    out = search("拖延心理学与自我控制")
+    assert "拖延心理学" in out
+    assert "自我控制" in out
+    assert not out.startswith("失败")
+
+
+def test_search_suggests_readable_chapter_identities(kb):
+    plant_book(
+        kb,
+        "delay",
+        "拖延心理学",
+        "教材。",
+        ["第一章 为什么拖", "第二章 怎么改"],
+        ["SECRET_BODY_ONE", "SECRET_BODY_TWO"],
+    )
+    from knowledge_mcp.retrieve import search
+
+    out = search("为什么拖")
+    assert "书/delay" in out
+    assert "书/delay/第一章 为什么拖" in out
+    assert "书/delay/第二章 怎么改" not in out
+    assert "SECRET_BODY_ONE" not in out
+    assert "SECRET_BODY_TWO" not in out
+
+    by_title = search("拖延心理学")
+    assert "书/delay" in by_title
+    assert "导读" in by_title
+    assert "SECRET_BODY_ONE" not in by_title
+    assert "SECRET_BODY_TWO" not in by_title
+
+
+def test_read_batch_two_books_at_once(kb):
+    plant_book(
+        kb,
+        "delay",
+        "拖延心理学",
+        "教材。",
+        ["第一章 为什么拖", "第二章 怎么改"],
+        ["AAA拖延正文", "BBB拖延另一章"],
+    )
+    plant_book(
+        kb,
+        "self",
+        "自我控制",
+        "教材。",
+        ["第一章 怎么忍"],
+        ["CCC控制正文"],
+    )
+    plant_note(kb, "mine", "我的对策", "办法。", "DDD笔记正文")
+    from knowledge_mcp.retrieve import search
+    from knowledge_mcp.retrieve import read
+
+    out = search("拖延")
+    assert "AAA拖延正文" not in out
+    assert "CCC控制正文" not in out
+    assert "DDD笔记正文" not in out
+
+    batch = read("", None, ["书/delay/第一章 为什么拖", "书/self/第一章 怎么忍"])
+    assert not batch.startswith("失败")
+    assert "AAA拖延正文" in batch
+    assert "CCC控制正文" in batch
+    assert "BBB拖延另一章" not in batch
+
+    with_note = read("", None, ["书/delay/第一章 为什么拖", "笔记/mine"])
+    assert "AAA拖延正文" in with_note
+    assert "DDD笔记正文" in with_note
+
+
+def test_read_batch_partial_failure_gives_other_blocks(kb):
+    plant_book(kb, "delay", "拖延心理学", "教材。", ["第一章 为什么拖"], ["AAA拖延正文"])
+    plant_book(kb, "self", "自我控制", "教材。", ["第一章 怎么忍"], ["CCC控制正文"])
+    from knowledge_mcp.retrieve import read
+
+    out = read("", None, ["书/delay/第一章 为什么拖", "书/ghost/第一章", "书/self/第一章 怎么忍"])
+    body = out.split("未读", 1)[0]
+    assert "AAA拖延正文" in body
+    assert "CCC控制正文" in body
+    assert "失败" in body
+    assert "卡在哪一步" in body
+
+
+def test_read_batch_whole_book_identity_rejects_all(kb):
+    plant_book(kb, "delay", "拖延心理学", "教材。", ["第一章 为什么拖"], ["AAA拖延正文"])
+    from knowledge_mcp.retrieve import read
+
+    out = read("", None, ["书/delay"])
+    assert out.startswith("失败")
+    assert "整本" in out
+    assert "AAA拖延正文" not in out
+
+    mixed = read("", None, ["书/delay/第一章 为什么拖", "书/delay"])
+    assert mixed.startswith("失败")
+    assert "整本" in mixed
+    assert "AAA拖延正文" not in mixed
+
+
+def test_read_batch_without_identity_rejected(kb):
+    plant_book(kb, "delay", "拖延心理学", "教材。", ["第一章 为什么拖"], ["AAA拖延正文"])
+    from knowledge_mcp.retrieve import read
+
+    empty = read("", None, [])
+    assert empty.startswith("失败")
+    assert "没有身份" in empty
+    assert "AAA拖延正文" not in empty
+
+    blank = read("", None, ["书/delay/第一章 为什么拖", ""])
+    assert blank.startswith("失败")
+    assert "没有身份" in blank
+    assert "AAA拖延正文" not in blank
+
+
+def test_read_batch_total_cap_truncates_and_marks_unread(kb):
+    plant_book(
+        kb,
+        "big",
+        "大部头",
+        "教材。",
+        ["第一章 甲", "第二章 乙", "第三章 丙", "第四章 丁"],
+        ["甲" * 8100, "乙" * 8100, "丙" * 8100, "丁" * 8100],
+    )
+    from knowledge_mcp.retrieve import read
+
+    out = read(
+        "",
+        None,
+        ["书/big/第一章 甲", "书/big/第二章 乙", "书/big/第三章 丙", "书/big/第四章 丁"],
+    )
+    body = out.split("未读", 1)[0]
+    assert "截断" in body
+    assert "甲" in body
+    assert "乙" in body
+    assert "丙" not in body
+    assert "丁" not in body
+    assert len(body) < 24000
+    assert "未读" in out
+    assert "书/big/第三章 丙" in out
+    assert "书/big/第四章 丁" in out
+    assert body.count("甲") <= 8001
+    assert body.count("乙") <= 8001
+
+
+def test_read_logs_canonical_identity(kb):
+    plant_book(kb, "delay", "拖延心理学", "教材。", ["第一章 为什么拖"], ["AAA拖延正文"])
+    from knowledge_mcp.log import read_calls
+    from knowledge_mcp.retrieve import read
+
+    read("书/delay", "第一章 为什么拖")
+    rows = [r for r in read_calls() if r.get("door") == "kb_read"]
+    assert rows[-1]["ok"] is True
+    assert rows[-1]["target"] == "书/delay/第一章 为什么拖"
+
+
+def test_server_kb_read_accepts_targets(kb):
+    plant_book(kb, "delay", "拖延心理学", "教材。", ["第一章 为什么拖"], ["AAA拖延正文"])
+    from knowledge_mcp.log import read_calls
+    from knowledge_mcp.server import kb_read
+
+    raw = getattr(kb_read, "__wrapped__", kb_read)
+    out = raw("", None, ["书/delay/第一章 为什么拖"])
+    assert "AAA拖延正文" in out
+    rows = [r for r in read_calls() if r.get("door") == "kb_read"]
+    assert rows[-1]["target"] == "书/delay/第一章 为什么拖"
