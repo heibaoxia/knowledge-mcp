@@ -206,11 +206,41 @@ def split_markdown(
     return title, candidates, parts
 
 
+META_KEYS = (
+    "title", "标题", "author", "作者", "language", "语言", "date", "日期",
+    "publisher", "出版", "isbn", "rights", "版权", "subject", "主题",
+    "identifier", "来源", "source",
+)
+META_LINE_RE = re.compile(r"^\*\*([^*]{1,20}):\*\*\s*(.*)$")
+
+
 def _plain(line: str) -> str:
-    """去掉行内标记和 `Title:` 这类标签，只留可比的文字。"""
-    s = re.sub(r"[*#`_\[\]]+", " ", line).strip()
-    s = re.sub(r"^(title|标题)\s*[:：]\s*", "", s, flags=re.I)
+    """去掉行内标记与 `**Title:**` 这类字段名，只留可比的正文。"""
+    s = line.strip()
+    m = META_LINE_RE.match(s)
+    if m:
+        s = m.group(2)
+    s = re.sub(r"[*#`_\[\]]+", " ", s).strip()
+    s = re.sub(r"^([A-Za-z一-鿿]{1,20})\s*[:：]\s*", "", s)
     return re.sub(r"\s+", " ", s).strip().lower()
+
+
+def _is_metadata_field(line: str) -> bool:
+    """`**Language:** zh` 这种「字段名 + 短值」是元数据，不是介绍。"""
+    s = line.strip()
+    m = META_LINE_RE.match(s)
+    if m:
+        key, val = m.group(1).strip().lower(), m.group(2).strip()
+    else:
+        m2 = re.match(r"^([A-Za-z一-鿿]{1,20})\s*[:：]\s*(.*)$", s)
+        if not m2:
+            return False
+        key, val = m2.group(1).strip().lower(), m2.group(2).strip()
+    if not val or len(val.split()) > 3:
+        return False
+    if key in META_KEYS:
+        return True
+    return len(key) <= 12
 
 
 def first_intro(parts: list[tuple[str, str]], nchap: int, title: str | None = None) -> str:
@@ -227,6 +257,8 @@ def first_intro(parts: list[tuple[str, str]], nchap: int, title: str | None = No
         for line in body.splitlines():
             s = line.strip()
             if not s or s.startswith("#"):
+                continue
+            if _is_metadata_field(s):
                 continue
             plain = _plain(s)
             if not plain or plain == part_head or (wanted and plain == wanted):

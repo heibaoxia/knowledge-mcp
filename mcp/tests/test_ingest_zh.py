@@ -93,6 +93,37 @@ def test_intro_ignores_labelled_title_line(kb, monkeypatch):
     assert "intro: 这本书讲阿德勒心理学。" in guide
 
 
+def test_intro_skips_metadata_field_lines(kb, monkeypatch):
+    """markitdown 会输出 **Language:** zh 这类元数据行，不能当介绍。"""
+    md = (
+        "# " + CH + NL + NL
+        + "**Title:** " + CH + NL
+        + "**Language:** zh" + NL
+        + "**Author:** 岸见一郎" + NL + NL
+        + "这本书讲阿德勒心理学。" + NL
+    )
+    monkeypatch.setattr("knowledge_mcp.ingest.run_markitdown", stub_convert(md))
+    src = drop_source(kb, "meta.epub")
+    info = convert_one(src)
+    guide = read_guide(Path(info["dir"]))
+    assert "intro: 这本书讲阿德勒心理学。" in guide
+    assert "Language" not in guide.split("---")[1]
+
+
+def test_metadata_only_book_gets_placeholder_intro(kb, monkeypatch):
+    """整本书只有元数据、没有正文时，介绍要退回占位话，不能抄元数据。"""
+    md = (
+        "# " + CH + NL + NL
+        + "**Title:** " + CH + NL
+        + "**Language:** zh" + NL
+    )
+    monkeypatch.setattr("knowledge_mcp.ingest.run_markitdown", stub_convert(md))
+    src = drop_source(kb, "metaonly.epub")
+    info = convert_one(src)
+    guide = read_guide(Path(info["dir"]))
+    assert "intro: 由源文件转换，含 1 块。" in guide
+
+
 def test_intro_skips_copyright_page(kb, monkeypatch):
     """抬头里的几句话不许是 COPYRIGHT，要取书里第一块真内容。"""
     monkeypatch.setattr("knowledge_mcp.ingest.run_markitdown", stub_convert(chaptered_markdown()))
