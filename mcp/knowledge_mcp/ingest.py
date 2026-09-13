@@ -18,21 +18,39 @@ from knowledge_mcp.log import guarded, log_call
 from knowledge_mcp.paths import dirs
 
 SOURCE_EXTS = {".pdf", ".epub", ".mobi", ".azw", ".azw3"}
-CONVERT = Path(
-    os.environ.get(
-        "KNOWLEDGE_MARKITDOWN",
-        r"C:\Users\Maxingyu\.claude\skills\markitdown\scripts\convert.py",
-    )
-)
+def _convert_candidates() -> list[Path]:
+    """markitdown 转换脚本的位置。别硬编码某台机器的路径。"""
+    home = Path.home()
+    return [
+        home / ".claude" / "skills" / "markitdown" / "scripts" / "convert.py",
+        Path(__file__).resolve().parents[2] / ".markitdown" / "convert.py",
+    ]
+
+
+def convert_script() -> Path:
+    """环境变量 KNOWLEDGE_MARKITDOWN 优先，其次常见位置。"""
+    override = os.environ.get("KNOWLEDGE_MARKITDOWN")
+    if override:
+        return Path(override).expanduser()
+    for cand in _convert_candidates():
+        if cand.is_file():
+            return cand
+    return _convert_candidates()[0]
 
 
 def run_markitdown(src: Path, out_dir: Path) -> Path:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    if not CONVERT.is_file():
-        raise RuntimeError(f"找不到 markitdown 脚本：{CONVERT}")
+    script = convert_script()
+    if not script.is_file():
+        nl = chr(10)
+        where = nl + "  " + (nl + "  ").join(str(x) for x in _convert_candidates())
+        raise RuntimeError(
+            "找不到 markitdown 转换脚本。用 KNOWLEDGE_MARKITDOWN 指向 convert.py，"
+            "当前找过：" + where
+        )
     r = subprocess.run(
-        [sys.executable, str(CONVERT), str(src), "--output-dir", str(out_dir)],
+        [sys.executable, str(script), str(src), "--output-dir", str(out_dir)],
         capture_output=True,
         text=True,
         encoding="utf-8",

@@ -1,7 +1,7 @@
 [project]
-name = "knowledge-mcp"
+name = "ziliaoshi"
 version = "0.0.1"
-description = "Local MCP knowledge room for agents"
+description = "一个专门为 Agent 提供专业知识的 MCP，可以自己打造这资料库。"
 requires-python = ">=3.11"
 dependencies = [
   "fastmcp>=2.12,<5",
@@ -10,6 +10,7 @@ dependencies = [
 ]
 
 [project.scripts]
+# 保留原命令名：本机已装的 exe 就是它，改名会让现有客户端配置失效
 knowledge-mcp = "knowledge_mcp.server:main"
 
 [build-system]

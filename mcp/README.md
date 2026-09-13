@@ -1,4 +1,4 @@
-# knowledge-mcp
+# ziliaoshi（MCP 部分）
 
 本机资料室 MCP。规格见仓库根目录 `需求.md`，顺序见 `docs/计划.md`。
 
@@ -14,7 +14,9 @@ python -m venv .venv
 .venv/Scripts/python -m pip install -e ./mcp -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
 ```
 
-入库转换走本机 markitdown 脚本：`C:\Users\Maxingyu\.claude\skills\markitdown\scripts\convert.py`。venv 里也要有 `markitdown`。
+入库转换走本机的 markitdown 脚本，程序按这个顺序找：
+环境变量 `KNOWLEDGE_MARKITDOWN` → `~/.claude/skills/markitdown/scripts/convert.py` → `.markitdown/convert.py`。
+找不到会明确报错并列出找过哪些位置。venv 里也要有 `markitdown`。
 
 测试：
 
