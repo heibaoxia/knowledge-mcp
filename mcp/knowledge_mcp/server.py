@@ -14,17 +14,19 @@ from knowledge_mcp.retrieve import search as retrieve_search
 mcp = FastMCP(
     name="knowledge",
     instructions=(
-        "这是本机资料室。人点名用它时再来。"
-        "检索先拿路标再点名阅读；书从源文件入库；笔记另走写笔记和净化；"
-        "自检只看记录出建议，不能改本工具源码。"
-        "不要为了省事去直接打开资料文件夹灌全文。"
+        '这是本机资料室。人点名用它时再来。'
+        '先 kb_search 拿路标（无正文），再 kb_read 点名建议块。不要打开资料/灌全文。'
+        '一次最多 5 块，每块约 8000 字，整次约 24000 字。'
+        '超长章只给开头；同一块再读仍是开头，没有续页。'
+        '不够就换问法再搜或另点一章。够答就停，不要按目录通读。'
+        '写笔记：preview → verify → create/update。自检不改本工具源码。'
     ),
 )
 
 
 @mcp.tool
 def kb_search(query: str = "", q: str = "") -> str:
-    """检索资料室。输入你想了解什么。现在只回路标，不返回章节正文。路标含建议块、无正文。书和笔记一起搜。"""
+    """检索资料室。输入你想了解什么。只回路标（含建议块），无正文。书和笔记一起搜。先检索再点名阅读；够答就停，不要按目录把每章都读完。"""
     return retrieve_search(query or q)
 
 
@@ -34,9 +36,7 @@ def kb_read(
     part: Optional[str] = None,
     targets: Optional[list[str]] = None,
 ) -> str:
-    """阅读点名的块。先检索拿身份再点。单块：target + part。多块：targets=[书/<slug>/<章> 或 笔记/<slug>]，
-    一次最多 5 块、单块顶 8000 字、整次顶 24000 字，超顶截断并列出没读到的项；某块找不到只这一块失败交还；
-    没身份或点名整本（书/<slug>）整单拒绝。检索默认无正文。"""
+    """阅读点名的块。先检索拿身份再点。单块：target + part。多块：targets=[书/<slug>/<章> 或 笔记/<slug>]，一次最多 5 块、单块顶 8000 字、整次顶 24000 字；超顶截断并列出没读到的项；某块找不到只这一块失败交还；没身份或点名整本（书/<slug>）整单拒绝。超长章只给开头；同一身份再读不会续后半。不够请换问法再检索或点另一章。够答就停。检索默认无正文。"""
     return retrieve_read(target, part, targets)
 
 

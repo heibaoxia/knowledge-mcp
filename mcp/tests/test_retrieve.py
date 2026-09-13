@@ -313,3 +313,15 @@ def test_server_kb_read_accepts_targets(kb):
     assert "AAA拖延正文" in out
     rows = [r for r in read_calls() if r.get("door") == "kb_read"]
     assert rows[-1]["target"] == "书/delay/第一章 为什么拖"
+
+
+def test_server_instructions_steer_read():
+    from knowledge_mcp.server import mcp
+
+    text = mcp.instructions or ""
+    assert "8000" in text
+    assert "24000" in text
+    assert "够答就停" in text
+    assert "续页" in text
+    assert "kb_search" in text
+    assert "资料" in text

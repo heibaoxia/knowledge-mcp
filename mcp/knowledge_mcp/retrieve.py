@@ -153,7 +153,8 @@ def _parse_target(target: str) -> tuple[str | None, str | None, str | None]:
 def _cap(text: str) -> str:
     if len(text) <= CHAR_CAP:
         return text
-    return text[:CHAR_CAP] + "\n\n[已截断，一次一块有字数顶。要下一块请再点名。]\n"
+    tail = chr(10) + chr(10) + '[' + '已截断：这一块最多 {n} 字，只给了开头。同一块再读还是这段开头，不能续页。要更多请换问法再检索，或点另一章。够答就停。'.format(n=CHAR_CAP) + ']' + chr(10)
+    return text[:CHAR_CAP] + tail
 
 
 def _read_book(slug: str, part: str | None) -> str:
