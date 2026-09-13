@@ -58,7 +58,7 @@ def kb_write_note(
     action: str = "preview",
     target: Optional[str] = None,
 ) -> str:
-    """写笔记。只能进笔记，不能当书。先 action=preview 看类似条目，再 create 或 update。"""
+    """写笔记。只能进笔记，不能当书。先 action=preview 看类似条目，再 action=verify（稿上 verify：相符 / 部分不符 / 库中无 / 非事实），再 create 或 update；相符 / 部分不符 必须先成功 kb_read 过 sources 里的身份。"""
     return write_note(markdown, action, target)
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -11,7 +12,11 @@ from knowledge_mcp.errors import fail
 from knowledge_mcp.ingest import slugify, uniquify
 from knowledge_mcp.log import guarded, log_call, read_calls
 from knowledge_mcp.paths import dirs
-from knowledge_mcp.retrieve import search, split_frontmatter
+from knowledge_mcp.retrieve import _ident_of, search, split_frontmatter
+
+VERDICTS = ("相符", "部分不符", "库中无", "非事实")
+WINDOW_CALLS = 100
+WINDOW_SECONDS = 24 * 3600
 
 
 def _fields(md: str) -> tuple[str, str, dict, str]:
@@ -40,7 +45,9 @@ def _similar(title: str, intro: str) -> str:
 
 
 def _key(md: str) -> str:
-    return hashlib.sha1(md.encode("utf-8")).hexdigest()
+    """同一份稿 = 标题 + 介绍 + 正文；verify/sources 不算改稿。"""
+    title, intro, _meta, rest = _fields(md)
+    return hashlib.sha1(f"{title}\n{intro}\n{rest}".encode("utf-8")).hexdigest()
 
 
 def _previewed(key: str) -> bool:
@@ -52,6 +59,131 @@ def _previewed(key: str) -> bool:
         ):
             return True
     return False
+
+
+def _verified(key: str) -> bool:
+    for rec in reversed(read_calls()):
+        if (
+            rec.get("door") == "kb_write_note"
+            and rec.get("action") == "verify"
+            and rec.get("key") == key
+        ):
+            return True
+    return False
+
+
+def _sources(meta: dict) -> list[str]:
+    raw = meta.get("sources")
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [raw]
+    if isinstance(raw, list):
+        return [str(x) for x in raw]
+    return [str(raw)]
+
+
+def _exists(ident: str) -> bool:
+    """身份在盘上存在吗？对标 _read_book 的匹配，只查不读（不调 kb_read）。"""
+    t = (ident or "").replace("\\", "/").strip().strip("/")
+    if t.startswith("资料/"):
+        t = t[len("资料/") :]
+    if t.startswith("笔记/"):
+        return (dirs()["notes"] / f"{Path(t[3:]).stem}.md").is_file()
+    if not t.startswith("书/"):
+        return False
+    bits = t[2:].split("/")
+    part = "/".join(bits[1:])
+    book = dirs()["books"] / bits[0]
+    if not part or not book.is_dir():
+        return False
+    if part in ("导读", "导读.md"):
+        return (book / "导读.md").is_file()
+    for p in sorted(book.glob("*.md")):
+        if p.name == "导读.md":
+            continue
+        with p.open(encoding="utf-8") as f:
+            first = f.readline()
+        if part in p.name or part in p.stem or part in first:
+            return True
+    return False
+
+
+def _read_recent(ident: str) -> bool:
+    """最近 100 条或 24 小时内成功 kb_read 过这个身份吗（先到为准）。"""
+    now = datetime.now(timezone.utc)
+    for i, rec in enumerate(reversed(read_calls())):
+        if i >= WINDOW_CALLS:
+            return False
+        try:
+            age = (now - datetime.fromisoformat(str(rec.get("ts")))).total_seconds()
+        except (TypeError, ValueError):
+            return False
+        if age > WINDOW_SECONDS:
+            return False
+        if (
+            rec.get("door") == "kb_read"
+            and rec.get("ok") is True
+            and _ident_of(str(rec.get("target") or ""), rec.get("part")) == ident
+        ):
+            return True
+    return False
+
+
+def _gate(md: str) -> str | None:
+    """求证闸门：不符就交 fail() 手递，合格返回 None。"""
+    title, intro, meta, rest = _fields(md)
+    verdict = str(meta.get("verify") or "").strip()
+    if verdict not in VERDICTS:
+        return fail(
+            "写笔记-求证",
+            "稿上要写 verify：相符 / 部分不符 / 库中无 / 非事实。",
+            "无",
+            "在 YAML 抬头补上四选一，再 action=verify。",
+        )
+    sources = _sources(meta)
+    if verdict in ("相符", "部分不符"):
+        if not sources:
+            return fail(
+                "写笔记-求证",
+                f"标了「{verdict}」却没列 sources。",
+                "无",
+                "先 kb_read 依据，把身份写进 sources 再 verify。",
+            )
+        for ident in sources:
+            if not _exists(ident):
+                return fail(
+                    "写笔记-求证",
+                    f"来源身份不存在：{ident}。",
+                    "无",
+                    "用检索路标上的规范身份，不要编。",
+                )
+            if not _read_recent(ident):
+                return fail(
+                    "写笔记-求证",
+                    f"没读过就写「{verdict}」：{ident}。",
+                    "无",
+                    "先用 kb_read 读这个身份，再 action=verify。",
+                )
+        return None
+    if verdict == "库中无":
+        if "根据《" in (title + intro + rest):
+            return fail(
+                "写笔记-求证",
+                "标了「库中无」却在稿里写「根据《…》」。",
+                "无",
+                "拿掉根据句；或先读依据，改标相符 / 部分不符。",
+            )
+        return None
+    for ident in sources:
+        if not _exists(ident):
+            return fail(
+                "写笔记-求证",
+                f"来源身份不存在：{ident}。",
+                "无",
+                "用检索路标上的规范身份，或删掉 sources。",
+            )
+    return None
 
 
 def _is_book_target(target: str | None) -> bool:
@@ -90,7 +222,7 @@ def write_note(markdown: str, action: str = "preview", target: str | None = None
         return (
             "写笔记预览（还没写入）\n"
             f"标题：{title or '（缺）'}\n"
-            "必须先看类似条目，再 action=create 新建，或 action=update 并指定 笔记/<slug>。\n\n"
+            "先看类似条目；然后 action=verify 写清 verify（相符 / 部分不符 / 库中无 / 非事实）和 sources，再 action=create 新建，或 action=update 并指定 笔记/<slug>。\n\n"
             + sim
         )
 
@@ -104,24 +236,52 @@ def write_note(markdown: str, action: str = "preview", target: str | None = None
         log_call("kb_write_note", False, action=action, step="护书")
         return out
 
+    if action == "verify":
+        out = _gate(md)
+        if out:
+            log_call("kb_write_note", False, action="verify", key=key, step="求证")
+            return out
+        log_call("kb_write_note", True, action="verify", key=key)
+        return (
+            "已求证（还没写入）\n"
+            f"结论：{str(meta.get('verify') or '').strip()}\n"
+            f"标题：{title or '（缺）'}\n"
+            "同一份稿（标题+介绍+正文）可以直接 create 或 update；改了正文要重走 preview 和 verify。\n"
+        )
+
     if not _previewed(key):
         out = fail(
             "写笔记-先搜",
             "不先看类似条目就新建，不允许。",
             "无",
-            "先用同一门 action=preview，看完再 create 或 update。",
+            "先用同一门 action=preview，看完再 verify、create 或 update。",
         )
         log_call("kb_write_note", False, action=action, step="先搜")
         return out + "\n" + sim
+
+    if not _verified(key):
+        out = fail(
+            "写笔记-求证",
+            "不先求证就写入，不允许。",
+            "无",
+            "对同一份稿先 action=verify，稿上写 verify：相符 / 部分不符 / 库中无 / 非事实。",
+        )
+        log_call("kb_write_note", False, action=action, step="求证")
+        return out
 
     if not title or not intro:
         out = fail(
             "写笔记-抬头",
             "笔记要有标题和几句介绍，否则以后检索扫不到。",
             "无",
-            "补上 YAML 头或 # 标题加一段介绍，再 preview → create。",
+            "补上 YAML 头或 # 标题加一段介绍，再 preview → verify → create。",
         )
         log_call("kb_write_note", False, action=action, step="抬头")
+        return out
+
+    out = _gate(md)
+    if out:
+        log_call("kb_write_note", False, action=action, key=key, step="求证")
         return out
 
     if action == "create":
@@ -167,7 +327,7 @@ def write_note(markdown: str, action: str = "preview", target: str | None = None
         "写笔记",
         f"不认识的 action：{action}。",
         "无",
-        "用 preview / create / update。",
+        "用 preview / verify / create / update。",
     )
     log_call("kb_write_note", False, action=action)
     return out

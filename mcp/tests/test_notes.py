@@ -1,5 +1,9 @@
-"""Block 3 gates: search-before-write; notes only; never touch books."""
+"""Block 7 gates: preview → verify → create/update; claims need real reads."""
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import pytest
 
 
 def plant_book(kb: Path) -> None:
@@ -9,19 +13,34 @@ def plant_book(kb: Path) -> None:
         "---\ntitle: 拖延心理学\ntype: 书\nintro: 教材。\ntags: []\n---\n\n# 拖延心理学\n",
         encoding="utf-8",
     )
+    (d / "01-ch.md").write_text(
+        "# 第一章 为什么拖\n\n拖延从逃避开始。\n", encoding="utf-8"
+    )
     (d / "正文.md").write_text("# 正文\n原书不可改。\n", encoding="utf-8")
 
 
-NOTE = """---
-title: 我的拖延对策
-type: 笔记
-intro: 自己用过的办法。
----
+CHAPTER = "书/delay/第一章 为什么拖"
 
-# 我的拖延对策
 
-先拆成很小的一步。
-"""
+def draft(
+    verify: str | None = None,
+    sources: list[str] | None = None,
+    body: str = "先拆成很小的一步。",
+) -> str:
+    head = "---\ntitle: 我的拖延对策\ntype: 笔记\nintro: 自己用过的办法。\n"
+    if verify is not None:
+        head += f"verify: {verify}\n"
+    if sources is not None:
+        head += "sources:\n" + "".join(f"  - {s}\n" for s in sources)
+    head += "---\n\n# 我的拖延对策\n\n" + body + "\n"
+    return head
+
+
+NOTE = draft()
+
+
+def notes_of(kb: Path) -> list[Path]:
+    return list((kb / "资料" / "笔记").glob("*.md"))
 
 
 def test_create_without_preview_refused(kb):
@@ -30,28 +49,26 @@ def test_create_without_preview_refused(kb):
     out = write_note(NOTE, action="create")
     assert out.startswith("失败")
     assert "搜" in out or "预览" in out
-    assert list((kb / "资料" / "笔记").glob("*.md")) == []
+    assert notes_of(kb) == []
 
 
 def test_preview_does_not_write(kb):
     from knowledge_mcp.notes import write_note
 
     out = write_note(NOTE, action="preview")
-    assert list((kb / "资料" / "笔记").glob("*.md")) == []
+    assert notes_of(kb) == []
     assert not out.startswith("失败")
 
 
-def test_create_after_preview_writes_note(kb):
+def test_create_after_preview_only_refused(kb):
+    """Block 7: preview alone is no longer enough; the old path must go red."""
     from knowledge_mcp.notes import write_note
 
-    write_note(NOTE, action="preview")
+    out = write_note(NOTE, action="preview")
+    assert not out.startswith("失败")
     out = write_note(NOTE, action="create")
-    assert not out.startswith("失败"), out
-    notes = list((kb / "资料" / "笔记").glob("*.md"))
-    assert len(notes) == 1
-    text = notes[0].read_text(encoding="utf-8")
-    assert "我的拖延对策" in text
-    assert "type: 笔记" in text or "type:笔记" in text
+    assert out.startswith("失败")
+    assert notes_of(kb) == []
 
 
 def test_cannot_write_into_books(kb):
@@ -87,4 +104,222 @@ def test_missing_title_refused(kb):
     write_note(md, action="preview")
     out = write_note(md, action="create")
     assert out.startswith("失败")
-    assert list((kb / "资料" / "笔记").glob("*.md")) == []
+    assert notes_of(kb) == []
+
+
+def test_preview_verify_non_fact_create_writes_note(kb):
+    from knowledge_mcp.notes import write_note
+
+    md = draft("非事实")
+    write_note(md, action="preview")
+    out = write_note(md, action="verify")
+    assert not out.startswith("失败"), out
+    out = write_note(md, action="create")
+    assert not out.startswith("失败"), out
+    notes = notes_of(kb)
+    assert len(notes) == 1
+    text = notes[0].read_text(encoding="utf-8")
+    assert "verify: 非事实" in text
+    assert "generated: true" in text
+
+
+def test_missing_or_unknown_verify_refused(kb):
+    from knowledge_mcp.notes import write_note
+
+    for md in (draft(), draft("大概吧")):
+        write_note(md, action="preview")
+        out = write_note(md, action="verify")
+        assert out.startswith("失败")
+        assert "卡在哪一步" in out
+        assert notes_of(kb) == []
+
+
+@pytest.mark.parametrize("verdict", ["相符", "部分不符"])
+def test_claim_match_without_read_refused(kb, verdict):
+    plant_book(kb)
+    from knowledge_mcp.notes import write_note
+
+    md = draft(verdict, [CHAPTER])
+    write_note(md, action="preview")
+    out = write_note(md, action="verify")
+    assert out.startswith("失败")
+    assert "卡在哪一步" in out
+    out = write_note(md, action="create")
+    assert out.startswith("失败")
+    assert notes_of(kb) == []
+
+
+@pytest.mark.parametrize("verdict", ["相符", "部分不符"])
+def test_claim_match_after_read_writes_note(kb, verdict):
+    plant_book(kb)
+    from knowledge_mcp.notes import write_note
+    from knowledge_mcp.retrieve import read
+
+    assert not read("书/delay", "第一章 为什么拖").startswith("失败")
+    md = draft(verdict, [CHAPTER])
+    write_note(md, action="preview")
+    out = write_note(md, action="verify")
+    assert not out.startswith("失败"), out
+    out = write_note(md, action="create")
+    assert not out.startswith("失败"), out
+    notes = notes_of(kb)
+    assert len(notes) == 1
+    text = notes[0].read_text(encoding="utf-8")
+    assert f"verify: {verdict}" in text
+    assert CHAPTER in text
+
+
+def test_claim_match_missing_source_refused(kb):
+    plant_book(kb)
+    from knowledge_mcp.notes import write_note
+
+    md = draft("相符", ["书/delay/第九章 没这章"])
+    write_note(md, action="preview")
+    out = write_note(md, action="verify")
+    assert out.startswith("失败")
+    assert notes_of(kb) == []
+
+
+def test_non_fact_source_must_exist(kb):
+    plant_book(kb)
+    from knowledge_mcp.notes import write_note
+
+    md = draft("非事实", ["笔记/没有这条"])
+    write_note(md, action="preview")
+    out = write_note(md, action="verify")
+    assert out.startswith("失败")
+    assert notes_of(kb) == []
+
+
+def test_no_in_book_with_claim_refused(kb):
+    from knowledge_mcp.notes import write_note
+
+    md = draft("库中无", [], body="根据《拖延心理学》第一章，先拆成很小的一步。")
+    write_note(md, action="preview")
+    out = write_note(md, action="verify")
+    assert out.startswith("失败")
+    out = write_note(md, action="create")
+    assert out.startswith("失败")
+    assert notes_of(kb) == []
+
+
+def test_no_in_book_without_claim_writes_note(kb):
+    from knowledge_mcp.notes import write_note
+
+    md = draft("库中无", [], body="查过了，库里没有。先拆成很小的一步。")
+    write_note(md, action="preview")
+    assert not write_note(md, action="verify").startswith("失败")
+    assert not write_note(md, action="create").startswith("失败")
+    assert "verify: 库中无" in notes_of(kb)[0].read_text(encoding="utf-8")
+
+
+def test_body_change_after_verify_refused(kb):
+    from knowledge_mcp.notes import write_note
+
+    md = draft("非事实")
+    write_note(md, action="preview")
+    write_note(md, action="verify")
+    out = write_note(draft("非事实", body="换了一整段。"), action="create")
+    assert out.startswith("失败")
+    assert notes_of(kb) == []
+
+
+def test_verify_fields_do_not_change_the_draft(kb):
+    plant_book(kb)
+    from knowledge_mcp.notes import write_note
+
+    write_note(NOTE, action="preview")  # no verify yet
+    md = draft("非事实", ["书/delay/导读"])  # same title+intro+body, plus verify/sources
+    assert not write_note(md, action="verify").startswith("失败")
+    assert not write_note(md, action="create").startswith("失败")
+    assert len(notes_of(kb)) == 1
+
+
+def test_pre_block6_read_log_target_plus_part_counts(kb):
+    plant_book(kb)
+    (kb / "检修" / "calls.jsonl").write_text(
+        json.dumps(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "door": "kb_read",
+                "ok": True,
+                "target": "书/delay",
+                "part": "第一章 为什么拖",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    from knowledge_mcp.notes import write_note
+
+    md = draft("相符", [CHAPTER])
+    write_note(md, action="preview")
+    assert not write_note(md, action="verify").startswith("失败")
+
+
+def test_read_older_than_24h_does_not_count(kb):
+    plant_book(kb)
+    old = datetime.now(timezone.utc) - timedelta(hours=25)
+    (kb / "检修" / "calls.jsonl").write_text(
+        json.dumps(
+            {
+                "ts": old.isoformat(),
+                "door": "kb_read",
+                "ok": True,
+                "target": CHAPTER,
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    from knowledge_mcp.notes import write_note
+
+    md = draft("相符", [CHAPTER])
+    write_note(md, action="preview")
+    assert write_note(md, action="verify").startswith("失败")
+
+
+def test_read_beyond_100_calls_does_not_count(kb):
+    plant_book(kb)
+    from knowledge_mcp.log import log_call
+    from knowledge_mcp.notes import write_note
+    from knowledge_mcp.retrieve import read
+
+    assert not read("书/delay", "第一章 为什么拖").startswith("失败")
+    for i in range(100):
+        log_call("kb_search", True, query=f"q{i}")
+    md = draft("相符", [CHAPTER])
+    write_note(md, action="preview")
+    assert write_note(md, action="verify").startswith("失败")
+
+
+def test_single_string_note_source_accepted(kb):
+    (kb / "资料" / "笔记" / "other.md").write_text(
+        "---\ntitle: 别条\ntype: 笔记\nintro: 别的。\n---\n\n# 别条\n\n别的正文。\n",
+        encoding="utf-8",
+    )
+    from knowledge_mcp.notes import write_note
+    from knowledge_mcp.retrieve import read
+
+    assert not read("笔记/other").startswith("失败")
+    md = NOTE.replace("type: 笔记\n", "type: 笔记\nverify: 相符\nsources: 笔记/other\n")
+    write_note(md, action="preview")
+    assert not write_note(md, action="verify").startswith("失败")
+    assert not write_note(md, action="create").startswith("失败")
+    text = notes_of(kb)[0].read_text(encoding="utf-8")
+    assert "sources: 笔记/other" in text or "- 笔记/other" in text
+
+
+def test_verdict_swapped_after_verify_refused(kb):
+    """Same 稿 (key unchanged), verify says 非事实 but create says 相符: re-gate."""
+    plant_book(kb)
+    from knowledge_mcp.notes import write_note
+
+    md = draft("非事实")
+    write_note(md, action="preview")
+    assert not write_note(md, action="verify").startswith("失败")
+    out = write_note(draft("相符", [CHAPTER]), action="create")
+    assert out.startswith("失败")
+    assert notes_of(kb) == []
