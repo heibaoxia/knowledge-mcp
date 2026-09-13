@@ -165,43 +165,71 @@ def split_markdown(
 ) -> tuple[str, list[str], list[tuple[str, str]]]:
     """切书，同时给出标题候选。
 
+    切法：
+    - 两个及以上一级标题：按一级标题切。
+    - 只有一个一级标题、下面有二级标题：标题那一段并进第一章，不单独成块
+      （一章都没少），也不丢在切点前面。
+    - 都没有：整篇一块。
+
     标题优先级：EPUB 元数据 dc:title -> 第一个不像版权页的一级标题 -> 原始文件名。
     """
     lines = text.splitlines()
     h1 = _heads(lines, "# ")
     h2 = _heads(lines, "## ")
-    headings = [name for _, name in h1] or [name for _, name in h2]
-    candidates = headings + [fallback_title]
-    cuts = h1 if len(h1) >= 2 else h2 if h2 else []
+    if len(h1) >= 2:
+        cuts = h1
+        prefix = None
+    elif h1 and h2:
+        cuts = [(h2[0][0], h2[0][1])] + h2[1:]
+        prefix = h1[0][0]
+    elif h2:
+        cuts = h2
+        prefix = None
+    else:
+        cuts = []
+        prefix = None
+    candidates = ([name for _, name in h1]
+                  or [name for _, name in h2]
+                  or [fallback_title])
     title = pick_title(candidates, fallback_title, meta_title)
     parts: list[tuple[str, str]] = []
     if not cuts:
-        if h1:
-            body = text if text.endswith("\n") else text + "\n"
-            parts.append((h1[0][1], body))
-        else:
-            body = text if text.endswith("\n") else text + "\n"
-            parts.append((fallback_title, body))
+        name = h1[0][1] if h1 else fallback_title
+        body = text if text.endswith("\n") else text + "\n"
+        parts.append((name, body))
     else:
         for n, (i, name) in enumerate(cuts):
+            start = prefix if (n == 0 and prefix is not None) else i
             end = cuts[n + 1][0] if n + 1 < len(cuts) else len(lines)
-            body = "\n".join(lines[i:end]).strip() + "\n"
+            body = "\n".join(lines[start:end]).strip() + "\n"
             parts.append((name, body))
     return title, candidates, parts
 
 
-def first_intro(parts: list[tuple[str, str]], nchap: int, title: str | None = None) -> str:
-    """取几句介绍：从切好的块里挑第一块「除了标题还有正文」的。
+def _plain(line: str) -> str:
+    """去掉行内标记和 `Title:` 这类标签，只留可比的文字。"""
+    s = re.sub(r"[*#`_\[\]]+", " ", line).strip()
+    s = re.sub(r"^(title|标题)\s*[:：]\s*", "", s, flags=re.I)
+    return re.sub(r"\s+", " ", s).strip().lower()
 
-    版权页常常排在第一章，但它的正文只有 COPYRIGHT 这类字，不能拿来当介绍。
+
+def first_intro(parts: list[tuple[str, str]], nchap: int, title: str | None = None) -> str:
+    """取几句介绍：切好的块里，第一块「除了标题还有正文」的那句。
+
+    跳过：版权/扉页整块、标题行、块标题本身、书名的各种写法
+    （裸书名，或 markitdown 那种 `**Title:** 书名`）。
     """
-    skip = {title.strip()} if title else set()
+    wanted = _plain(title) if title else ""
     for name, body in parts:
         if looks_boilerplate(name):
-            continue  # 版权/扉页整块跳过
+            continue
+        part_head = _plain(name)
         for line in body.splitlines():
             s = line.strip()
-            if not s or s.startswith("#") or s in skip or s == name.strip():
+            if not s or s.startswith("#"):
+                continue
+            plain = _plain(s)
+            if not plain or plain == part_head or (wanted and plain == wanted):
                 continue
             return s[:80]
     return f"由源文件转换，含 {nchap} 块。"

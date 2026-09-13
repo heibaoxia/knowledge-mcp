@@ -78,6 +78,21 @@ def chaptered_markdown() -> str:
     )
 
 
+def test_intro_ignores_labelled_title_line(kb, monkeypatch):
+    """markitdown 会把书名输出成 **Title:** …，这行也不能当介绍。"""
+    md = (
+        "# " + CH + NL + NL
+        + "**Title:** " + CH + NL + NL
+        + "这本书讲阿德勒心理学。" + NL + NL
+        + "## 第一夜 我们的不幸是谁的错？" + NL + NL + "正文。" + NL
+    )
+    monkeypatch.setattr("knowledge_mcp.ingest.run_markitdown", stub_convert(md))
+    src = drop_source(kb, "labelled.epub")
+    info = convert_one(src)
+    guide = read_guide(Path(info["dir"]))
+    assert "intro: 这本书讲阿德勒心理学。" in guide
+
+
 def test_intro_skips_copyright_page(kb, monkeypatch):
     """抬头里的几句话不许是 COPYRIGHT，要取书里第一块真内容。"""
     monkeypatch.setattr("knowledge_mcp.ingest.run_markitdown", stub_convert(chaptered_markdown()))
