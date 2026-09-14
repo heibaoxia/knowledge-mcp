@@ -330,6 +330,28 @@ def _ensure() -> sqlite3.Connection:
                         tokenize_index(body),
                     ),
                 )
+            mp = guide.parent / MAP_FILE
+            if mp.is_file():
+                try:
+                    raw = mp.read_text(encoding="utf-8")
+                except OSError:
+                    raw = ""
+                if raw:
+                    parsed = parse_map(raw)
+                    blob = map_index_text(raw)
+                    suggest = " ".join(parsed.get("suggest") or [])
+                    con.execute(
+                        "INSERT INTO docs VALUES (?,?,?,?,?,?,?)",
+                        (
+                            f"书/{slug}",
+                            slug,
+                            "地图",
+                            suggest,
+                            tokenize_index(title),
+                            tokenize_index(suggest),
+                            tokenize_index(blob),
+                        ),
+                    )
     notes = dirs()["notes"]
     if notes.is_dir():
         for p in sorted(notes.glob("*.md")):
@@ -395,7 +417,8 @@ def search_index(q: str) -> list[dict]:
     try:
         rows = con.execute(
             "SELECT ident, book_id, kind, label, bm25(docs, 3.0, 3.0, 1.0) FROM docs "
-            "WHERE docs MATCH ? AND docs MATCH ? ORDER BY bm25(docs, 3.0, 3.0, 1.0)",
+            "WHERE kind != '地图' AND docs MATCH ? AND docs MATCH ? "
+            "ORDER BY bm25(docs, 3.0, 3.0, 1.0)",
             (expr, gate),
         ).fetchall()
     except sqlite3.OperationalError:
@@ -427,4 +450,59 @@ def search_index(q: str) -> list[dict]:
             h["score"],
         )
     )
+    return out
+
+
+def latin_blocked(q: str) -> bool:
+    parts = parse_query(q)
+    con = _ensure()
+    return any(
+        re.fullmatch(r"[A-Za-z0-9_]+", p) and _df(con, p) == 0 for p in parts
+    )
+
+
+def search_maps(q: str) -> list[dict]:
+    if latin_blocked(q):
+        return []
+    expr = query_match(q)
+    if not expr:
+        return []
+    con = _ensure()
+    parts = parse_query(q)
+    try:
+        rows = con.execute(
+            "SELECT ident, book_id, bm25(docs, 3.0, 3.0, 1.0) FROM docs "
+            "WHERE kind = '地图' AND docs MATCH ? "
+            "ORDER BY bm25(docs, 3.0, 3.0, 1.0)",
+            (expr,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for ident, book_id, score in rows:
+        if ident in seen:
+            continue
+        seen.add(ident)
+        suggest, why = [], []
+        mp = dirs()["books"] / str(book_id) / MAP_FILE
+        if mp.is_file():
+            try:
+                raw = mp.read_text(encoding="utf-8")
+            except OSError:
+                raw = ""
+            parsed = parse_map(raw)
+            suggest = [s for s in (parsed.get("suggest") or []) if s]
+            blob = map_index_text(raw)
+            why = [p for p in parts if p and p in blob][:4]
+        out.append(
+            {
+                "ident": f"书/{book_id}",
+                "book_id": book_id,
+                "kind": "书",
+                "suggest": suggest,
+                "why": why,
+                "score": score,
+            }
+        )
     return out
