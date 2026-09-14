@@ -16,6 +16,7 @@ from knowledge_mcp.index import (
     latin_blocked,
     map_index_text,
     parse_map,
+    parse_query,
     search_index,
     search_maps,
 )
@@ -217,8 +218,18 @@ def _header_hits(q: str) -> list[dict]:
     return out
 
 
+def _life_literal_ok(q: str, bid: str, items: list[dict]) -> bool:
+    longs = [p for p in parse_query(q) if len(p) >= 3]
+    if not longs:
+        return True
+    blob = _book_title(bid) + " ".join(
+        (it.get("ident") or "") + (it.get("name") or "") for it in items
+    )
+    return any(p in blob for p in longs)
+
+
 def _format_landmarks(
-    lit: list[dict], maps: list[dict], life: bool
+    lit: list[dict], maps: list[dict], life: bool, q: str
 ) -> tuple[str, int, int, int]:
     lit_groups: dict[tuple[str, str], list[dict]] = {}
     lit_order: list[tuple[str, str]] = []
@@ -239,7 +250,22 @@ def _format_landmarks(
     notes = [(kind, bid) for kind, bid in lit_order if kind != "书"]
     both = [bid for bid in lit_books if bid in map_by]
     lit_only = [bid for bid in lit_books if bid not in map_by]
+    if life:
+        lit_only = [
+            bid
+            for bid in lit_only
+            if _life_literal_ok(q, bid, lit_groups.get(("书", bid), []))
+        ]
     map_only = [bid for bid in map_order if bid not in set(lit_books)]
+    quoted = re.findall(r"《([^》]+)》", q)
+    if quoted:
+        def _quoted_ok(bid: str) -> bool:
+            title = _book_title(bid)
+            return any(x in title for x in quoted)
+
+        both = [b for b in both if _quoted_ok(b)]
+        lit_only = [b for b in lit_only if _quoted_ok(b)]
+        map_only = [b for b in map_only if _quoted_ok(b)]
     if life:
         rest = [("仅地图", "书", b) for b in map_only] + [
             ("仅字面", "书", b) for b in lit_only
@@ -352,7 +378,7 @@ def search(query: str) -> str:
                 **extra,
             )
             return out
-    out, both_n, lit_n, map_n = _format_landmarks(lit, maps, _life_query(q))
+    out, both_n, lit_n, map_n = _format_landmarks(lit, maps, _life_query(q), q)
     log_call(
         "kb_search",
         True,

@@ -456,6 +456,42 @@ def test_pytorch_empty_with_maps(kb):
     assert "没有" in out or "0" in out
 
 
+def test_titled_query_does_not_drag_unrelated_book(kb):
+    plant_book(kb, "courage", "被讨厌的勇气", "阿德勒。", ["第四夜 要有被讨厌的勇气"], ["勇气正文"])
+    plant_book(kb, "mao", "毛泽东选集", "著作。", ["实践论"], ["也谈勇气与讨厌。"])
+    _plant_map(
+        kb, "courage", "被讨厌的勇气",
+        ["总是在意别人是不是讨厌我该怎么办", "怕被别人讨厌还想做自己怎么办", "别人干涉我的生活该怎么办"],
+        ["革命战争怎么打"],
+        "第四夜 要有被讨厌的勇气",
+    )
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("《被讨厌的勇气》大概讲什么")
+    assert "被讨厌的勇气" in out
+    assert "毛泽东选集" not in out
+
+
+def test_life_query_keeps_mao_out_even_if_body_has_grams(kb):
+    plant_book(kb, "courage", "被讨厌的勇气", "阿德勒。", ["第四夜 要有被讨厌的勇气"], ["哲人谈话。"])
+    plant_book(kb, "mao", "毛泽东选集", "著作。", ["实践论"], ["文中有别人讨厌厌我意别很多别人。"])
+    _plant_map(
+        kb, "courage", "被讨厌的勇气",
+        ["总是在意别人是不是讨厌我该怎么办", "怕被别人讨厌还想做自己怎么办", "别人干涉我的生活该怎么办"],
+        ["革命战争怎么打"],
+        "第四夜 要有被讨厌的勇气",
+    )
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("我总是很在意别人是不是讨厌我，该怎么办")
+    assert "被讨厌的勇气" in out
+    assert "毛泽东选集" not in out
+
+
 def test_life_fallback_still_returns_map(kb):
     plant_book(kb, "courage", "被讨厌的勇气", "介绍。", ["第四夜"], ["完全不相干的哲人对话。"])
     _plant_map(
