@@ -14,6 +14,7 @@ from pathlib import Path
 import yaml
 
 from knowledge_mcp.errors import fail
+from knowledge_mcp.index import invalidate, map_problems
 from knowledge_mcp.log import guarded, log_call
 from knowledge_mcp.paths import dirs
 
@@ -468,7 +469,14 @@ def convert_one(src: Path) -> dict:
     (book_dir / "导读.md").write_text(
         render_guide(title, intro, names, rel), encoding="utf-8"
     )
-    return {"slug": slug, "title": title, "archive": rel, "dir": book_dir.as_posix()}
+    invalidate()
+    return {
+        "slug": slug,
+        "title": title,
+        "archive": rel,
+        "dir": book_dir.as_posix(),
+        "map_ok": not map_problems(book_dir),
+    }
 
 
 def ingest_sources(files: list[Path], step_prefix: str) -> str:
@@ -480,10 +488,16 @@ def ingest_sources(files: list[Path], step_prefix: str) -> str:
         except Exception as e:
             failed.append((src, str(e), i))
     lines = []
+    missing = 0
     for item in ok:
         lines.append(f"- {item['title']} → 资料/书/{item['slug']}/导读.md ；源文件 {item['archive']}")
+        if not item.get("map_ok"):
+            missing += 1
     if not failed:
-        return f"入库完成\n成功 {len(ok)} 本\n" + "\n".join(lines) + "\n"
+        out = f"入库完成\n成功 {len(ok)} 本\n" + "\n".join(lines) + "\n"
+        if missing:
+            out += f"缺地图 {missing} 本（源文件已归档，不算入完；补 资料/书/<slug>/地图.md）\n"
+        return out
     why = "；".join(f"{p.name}：{err}" for p, err, _ in failed)
     step = f"{step_prefix}-转换第 {failed[0][2]} 个文件"
     nxt = "坏的源文件仍在原处，不要编书顶上；修好或换文件后再走这一门。"

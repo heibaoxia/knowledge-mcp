@@ -140,3 +140,95 @@ def test_nav_body_not_indexed(kb):
     hits = search_index("矛盾论")
     names = [h["name"] for h in hits]
     assert all("目" not in n and "录" not in n for n in names)
+
+
+def _guide(kb: Path, slug: str, title: str, chapters: list[str]) -> Path:
+    d = kb / "资料" / "书" / slug
+    d.mkdir(parents=True)
+    toc = "\n".join(f"- {c}" for c in chapters)
+    (d / "导读.md").write_text(
+        f"---\ntitle: {title}\ntype: 书\nintro: 介绍。\n---\n\n# {title}\n\n## 目录\n{toc}\n",
+        encoding="utf-8",
+    )
+    for i, c in enumerate(chapters, 1):
+        (d / f"{i:02d}-{c}.md").write_text(f"# {c}\n\n正文。\n", encoding="utf-8")
+    return d
+
+
+VALID = """---
+title: 拖延心理学
+type: 地图
+book: 书/delay
+generated: true
+---
+
+## 能解决什么
+- 总是拖到截止日期前一晚才动手怎么办
+- 明明想改却还是把事情往后推怎么办
+- 工作一难就先刷手机该怎么收
+
+## 不解决什么
+- 怎么用 PyTorch 训练网络
+- 中国社会各阶级怎么划分
+
+## 建议从哪读
+- 书/delay/第一章 为什么拖
+
+## 依据块
+- 总是拖到截止日期前一晚才动手怎么办 → 书/delay/第一章 为什么拖
+- 明明想改却还是把事情往后推怎么办 → 书/delay/第一章 为什么拖
+- 工作一难就先刷手机该怎么收 → 书/delay/第一章 为什么拖
+"""
+
+
+def test_parse_and_ok(kb):
+    from knowledge_mcp.index import ident_exists, map_problems, parse_map
+
+    d = _guide(kb, "delay", "拖延心理学", ["第一章 为什么拖"])
+    (d / "地图.md").write_text(VALID, encoding="utf-8")
+    assert map_problems(d) == []
+    p = parse_map(VALID)
+    assert p["title"] == "拖延心理学"
+    assert 3 <= len(p["solves"]) <= 8
+    assert ident_exists("书/delay/第一章 为什么拖")
+
+
+def test_missing_map_is_problem(kb):
+    from knowledge_mcp.index import map_problems
+
+    d = _guide(kb, "delay", "拖延心理学", ["第一章 为什么拖"])
+    probs = map_problems(d)
+    assert any("缺" in x for x in probs)
+
+
+def test_dead_ident_is_problem(kb):
+    from knowledge_mcp.index import map_problems
+
+    d = _guide(kb, "delay", "拖延心理学", ["第一章 为什么拖"])
+    bad = VALID.replace("书/delay/第一章 为什么拖", "书/delay/不存在的章")
+    (d / "地图.md").write_text(bad, encoding="utf-8")
+    probs = map_problems(d)
+    assert any("不存在" in x or "死" in x for x in probs)
+
+
+def test_title_must_match_guide(kb):
+    from knowledge_mcp.index import map_problems
+
+    d = _guide(kb, "delay", "拖延心理学", ["第一章 为什么拖"])
+    (d / "地图.md").write_text(VALID.replace("title: 拖延心理学", "title: 编的书名"), encoding="utf-8")
+    assert map_problems(d)
+
+
+def test_map_file_not_in_literal_index(kb):
+    _plant_book(kb, "delay", "拖延心理学", {"01-第一章.md": "# 第一章\n\n只谈拖延。\n"})
+    (kb / "资料" / "书" / "delay" / "地图.md").write_text(
+        "---\ntitle: 拖延心理学\ntype: 地图\ngenerated: true\n---\n\n"
+        "## 能解决什么\n- UNIQUE_MAP_TOKEN 怕被讨厌怎么办\n",
+        encoding="utf-8",
+    )
+    from knowledge_mcp.index import invalidate, search_index
+
+    invalidate()
+    hits = search_index("UNIQUE_MAP_TOKEN")
+    assert all(h.get("kind") != "书" or "地图" not in h.get("ident", "") for h in hits)
+    assert all("UNIQUE_MAP_TOKEN" not in str(h.get("ident")) for h in hits)

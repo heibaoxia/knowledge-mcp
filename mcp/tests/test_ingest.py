@@ -287,3 +287,26 @@ def test_guide_comes_from_headings_not_llm(kb, monkeypatch):
     assert "矛盾论" in text
     assert "第一章 为什么拖" in text
     assert "LLM" not in text
+
+
+def test_inbox_reports_missing_map(kb, monkeypatch):
+    _patch_convert(monkeypatch)
+    drop_source(kb, "delay.epub")
+    from knowledge_mcp.ingest import ingest_inbox
+
+    out = ingest_inbox()
+    assert not out.startswith("失败")
+    assert "缺地图" in out
+    slugs = list((kb / "资料" / "书").iterdir())
+    assert slugs and not (slugs[0] / "地图.md").is_file()
+
+
+def test_convert_one_calls_invalidate(kb, monkeypatch):
+    _patch_convert(monkeypatch)
+    called = []
+    monkeypatch.setattr("knowledge_mcp.ingest.invalidate", lambda: called.append(1))
+    src = drop_source(kb, "delay.epub")
+    from knowledge_mcp.ingest import convert_one
+
+    convert_one(src)
+    assert called

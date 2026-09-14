@@ -346,3 +346,20 @@ def test_read_window_hash2_is_not_the_start(kb):
     second = read(target="书/delay/长章#2")
     assert "TAIL_MARK" in second
     assert "邻块" in second
+
+
+def test_read_map_by_ident(kb):
+    plant_book(kb, "delay", "拖延心理学", "教材。", ["第一章", "第二章"], ["章正文", "另一章"])
+    (kb / "资料" / "书" / "delay" / "地图.md").write_text(
+        "---\ntitle: 拖延心理学\ntype: 地图\ngenerated: true\n---\n\n地图短文 MAP_ONLY_MARK\n",
+        encoding="utf-8",
+    )
+    from knowledge_mcp.retrieve import read
+
+    out = read("书/delay/地图")
+    assert "MAP_ONLY_MARK" in out
+    assert not out.startswith("失败")
+    chap = read("书/delay/第二章")
+    assert "MAP_ONLY_MARK" not in chap
+    assert "邻块" in chap
+    assert "地图" not in chap.split("邻块")[-1]

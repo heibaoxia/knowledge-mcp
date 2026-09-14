@@ -7,7 +7,7 @@ from pathlib import Path
 import yaml
 
 from knowledge_mcp.errors import fail
-from knowledge_mcp.index import _block_name, search_index
+from knowledge_mcp.index import SKIP_FILES, _block_name, search_index
 from knowledge_mcp.log import guarded, log_call
 from knowledge_mcp.paths import dirs
 
@@ -260,20 +260,21 @@ def _read_book(slug: str, part: str | None) -> str:
             "例如 part=导读 或 part=第一章。",
         )
     name, win = _split_part(part)
-    if name in ("导读", "导读.md"):
-        p = book / "导读.md"
+    special = "导读" if name in ("导读", "导读.md") else ("地图" if name in ("地图", "地图.md") else None)
+    if special:
+        p = book / f"{special}.md"
         if not p.is_file():
-            return fail("阅读-点名", "这份书没有导读。", "无", "换一块或先入库。")
+            return fail("阅读-点名", f"这份书没有{special}。", "无", "换一块或先入库。")
         text = p.read_text(encoding="utf-8")
         nwin = max(1, (len(text) + CHAR_CAP - 1) // CHAR_CAP)
         chunk = _cap(text[(win - 1) * CHAR_CAP : win * CHAR_CAP])
-        nb = _neighbors([], 0, slug, "导读", win, nwin)
+        nb = _neighbors([], 0, slug, special, win, nwin)
         return chunk + (("\n" + nb) if nb else "")
     def _file_key(p: Path) -> tuple[int, str]:
         m = re.match(r"^(\d+)", p.name)
         return (int(m.group(1)) if m else 10**9, p.name)
 
-    files = [p for p in sorted(book.glob("*.md"), key=_file_key) if p.name != "导读.md"]
+    files = [p for p in sorted(book.glob("*.md"), key=_file_key) if p.name not in SKIP_FILES]
     for i, p in enumerate(files):
         text = p.read_text(encoding="utf-8")
         first = text.splitlines()[0] if text else ""

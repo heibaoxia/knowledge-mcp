@@ -5,6 +5,8 @@ import re
 import sqlite3
 from pathlib import Path
 
+import yaml
+
 from knowledge_mcp.paths import dirs
 
 HAN = re.compile(r"[\u4e00-\u9fff]+")
@@ -12,6 +14,9 @@ ASCII = re.compile(r"[A-Za-z0-9_]+")
 FUN_WORDS = ("什么", "怎么", "如何", "这个", "一个", "我们", "自己")
 FUN_CHARS = set("的了是和与及或在有被把让就都也还很到从对")
 NAV_MARKS = ("目录", "目 录", "索引", "参考文献", "术语表")
+MAP_FILE = "地图.md"
+SKIP_FILES = frozenset({"导读.md", MAP_FILE})
+IDENT_IN_LINE = re.compile(r"(?:书|笔记)/\S.*")
 
 _con: sqlite3.Connection | None = None
 _root: str | None = None
@@ -122,6 +127,162 @@ def _block_name(path: Path) -> str:
     return stem[m.end() :] if m else stem
 
 
+def _frontmatter(text: str) -> tuple[dict, str]:
+    if not (text or "").startswith("---"):
+        return {}, text
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return {}, text
+    meta = yaml.safe_load(parts[1]) or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    return meta, parts[2].lstrip("\n")
+
+
+def _map_sections(body: str) -> dict[str, str]:
+    sections: dict[str, str] = {}
+    current = None
+    buf: list[str] = []
+    for line in (body or "").splitlines():
+        if line.startswith("## "):
+            if current is not None:
+                sections[current] = "\n".join(buf).strip()
+            current = line[3:].strip()
+            buf = []
+        else:
+            buf.append(line)
+    if current is not None:
+        sections[current] = "\n".join(buf).strip()
+    return sections
+
+
+def _bullets(text: str) -> list[str]:
+    return [ln.strip()[2:].strip() for ln in (text or "").splitlines() if ln.strip().startswith("- ")]
+
+
+def parse_map(text: str) -> dict:
+    meta, body = _frontmatter(text or "")
+    secs = _map_sections(body)
+    gen = meta.get("generated")
+    errors: list[str] = []
+    if meta.get("type") != "地图":
+        errors.append("type 不是地图")
+    if gen is not True and str(gen).lower() != "true":
+        errors.append("generated 不是 true")
+    return {
+        "title": str(meta.get("title") or ""),
+        "type": meta.get("type"),
+        "book": meta.get("book"),
+        "generated": gen,
+        "solves": _bullets(secs.get("能解决什么", "")),
+        "not_solves": _bullets(secs.get("不解决什么", "")),
+        "suggest": _bullets(secs.get("建议从哪读", "")),
+        "evidence": _bullets(secs.get("依据块", "")),
+        "solves_body": secs.get("能解决什么", ""),
+        "suggest_body": secs.get("建议从哪读", ""),
+        "errors": errors,
+        "sections": secs,
+    }
+
+
+def ident_exists(ident: str) -> bool:
+    t = (ident or "").replace("\\", "/").strip().strip("/")
+    if t.startswith("资料/"):
+        t = t[len("资料/") :]
+    t = re.sub(r"#\d+$", "", t)
+    if t.startswith("笔记/"):
+        slug = Path(t[3:]).stem
+        return bool(slug) and (dirs()["notes"] / f"{slug}.md").is_file()
+    if not t.startswith("书/"):
+        return False
+    bits = t[2:].split("/")
+    slug = bits[0] if bits else ""
+    if not slug:
+        return False
+    book = dirs()["books"] / slug
+    if not book.is_dir():
+        return False
+    part = "/".join(bits[1:]) if len(bits) > 1 else ""
+    if not part:
+        return False
+    if part in ("导读", "导读.md"):
+        return (book / "导读.md").is_file()
+    if part in ("地图", MAP_FILE):
+        return (book / MAP_FILE).is_file()
+    for p in book.glob("*.md"):
+        if p.name in SKIP_FILES:
+            continue
+        if _block_name(p) == part:
+            return True
+    return False
+
+
+def _idents_in(lines: list[str]) -> list[str]:
+    out: list[str] = []
+    for line in lines:
+        m = IDENT_IN_LINE.search(line)
+        if m:
+            out.append(m.group(0).strip().rstrip("。．"))
+    return out
+
+
+def map_problems(book_dir: Path) -> list[str]:
+    book_dir = Path(book_dir)
+    mp = book_dir / MAP_FILE
+    if not mp.is_file():
+        return ["缺地图"]
+    try:
+        text = mp.read_text(encoding="utf-8")
+    except OSError as e:
+        return [f"读地图失败：{e}"]
+    parsed = parse_map(text)
+    probs = list(parsed.get("errors") or [])
+    slug = book_dir.name
+    if parsed.get("book") != f"书/{slug}":
+        probs.append(f"book 应为 书/{slug}")
+    guide = book_dir / "导读.md"
+    guide_title = ""
+    if guide.is_file():
+        try:
+            meta, _ = _frontmatter(guide.read_text(encoding="utf-8"))
+            guide_title = str(meta.get("title") or "")
+        except OSError:
+            guide_title = ""
+    if parsed.get("title") != guide_title:
+        probs.append("title 与导读不一致")
+    secs = parsed.get("sections") or {}
+    for name in ("能解决什么", "不解决什么", "建议从哪读", "依据块"):
+        if name not in secs:
+            probs.append(f"缺「{name}」段")
+    solves = parsed.get("solves") or []
+    if not (3 <= len(solves) <= 8):
+        probs.append("能解决什么须 3–8 条")
+    if any(len(s) > 40 for s in solves):
+        probs.append("能解决什么某条超过 40 字")
+    not_solves = parsed.get("not_solves") or []
+    if not (1 <= len(not_solves) <= 5):
+        probs.append("不解决什么须 1–5 条")
+    evidence = parsed.get("evidence") or []
+    suggest = parsed.get("suggest") or []
+    for ident in _idents_in(suggest + evidence):
+        if not ident_exists(ident):
+            probs.append(f"身份不存在：{ident}")
+    if sum(1 for line in evidence if "书/" in line) < len(solves):
+        probs.append("依据块条数少于能解决什么")
+    if solves:
+        by_text = all(any(s in line for line in evidence) for s in solves)
+        if not (by_text or len(evidence) >= len(solves)):
+            probs.append("能解决什么未挂依据块")
+    return probs
+
+
+def map_index_text(text: str) -> str:
+    parsed = parse_map(text)
+    return "\n".join(
+        x for x in (parsed.get("solves_body") or "", parsed.get("suggest_body") or "") if x
+    )
+
+
 def _ensure() -> sqlite3.Connection:
     global _con, _root
     root = str(dirs()["root"])
@@ -148,7 +309,7 @@ def _ensure() -> sqlite3.Connection:
             except OSError:
                 pass
             for p in sorted(guide.parent.glob("*.md")):
-                if p.name == "导读.md":
+                if p.name in SKIP_FILES:
                     continue
                 try:
                     raw = p.read_text(encoding="utf-8")
