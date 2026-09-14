@@ -379,41 +379,55 @@ def _ensure() -> sqlite3.Connection:
     return con
 
 
-def _df(con: sqlite3.Connection, piece: str) -> int:
+def _df(con: sqlite3.Connection, piece: str, kind: str | None = None) -> int:
     expr = _fts_piece(piece)
     try:
-        row = con.execute(
-            "SELECT count(*) FROM docs WHERE docs MATCH ?", (expr,)
-        ).fetchone()
+        if kind:
+            row = con.execute(
+                "SELECT count(*) FROM docs WHERE kind = ? AND docs MATCH ?",
+                (kind, expr),
+            ).fetchone()
+        else:
+            row = con.execute(
+                "SELECT count(*) FROM docs WHERE docs MATCH ?", (expr,)
+            ).fetchone()
         return int(row[0] if row else 0)
     except sqlite3.OperationalError:
         return 0
 
 
-def search_index(q: str) -> list[dict]:
+def _match_gate(
+    con: sqlite3.Connection, q: str, kind: str | None = None
+) -> tuple[str, str, list[str]] | None:
     parts = parse_query(q)
     expr = query_match(q)
     if not expr:
-        return []
-    con = _ensure()
+        return None
     real = _real_pieces(_expand_pieces(parts))
     if real:
-        dfs = [(p, _df(con, p)) for p in real]
-        latin_miss = any(
-            d == 0 and re.fullmatch(r"[A-Za-z0-9_]+", p) for p, d in dfs
-        )
-        if latin_miss:
-            return []
+        dfs = [(p, _df(con, p, kind)) for p in real]
+        if any(d == 0 and re.fullmatch(r"[A-Za-z0-9_]+", p) for p, d in dfs):
+            return None
         dfs = [(p, d) for p, d in dfs if d > 0]
         if not dfs:
-            return []
-        long = [p for p, d in dfs if d > 0 and (len(p) >= 3 or re.fullmatch(r"[A-Za-z0-9_]{3,}", p))]
-        if long:
-            gate = " OR ".join(_fts_piece(p) for p in long)
-        else:
-            gate = expr
+            return None
+        long = [
+            p
+            for p, d in dfs
+            if d > 0 and (len(p) >= 3 or re.fullmatch(r"[A-Za-z0-9_]{3,}", p))
+        ]
+        gate = " OR ".join(_fts_piece(p) for p in long) if long else expr
     else:
         gate = expr
+    return expr, gate, parts
+
+
+def search_index(q: str) -> list[dict]:
+    con = _ensure()
+    gated = _match_gate(con, q)
+    if not gated:
+        return []
+    expr, gate, parts = gated
     try:
         rows = con.execute(
             "SELECT ident, book_id, kind, label, bm25(docs, 3.0, 3.0, 1.0) FROM docs "
@@ -464,17 +478,17 @@ def latin_blocked(q: str) -> bool:
 def search_maps(q: str) -> list[dict]:
     if latin_blocked(q):
         return []
-    expr = query_match(q)
-    if not expr:
-        return []
     con = _ensure()
-    parts = parse_query(q)
+    gated = _match_gate(con, q, "地图")
+    if not gated:
+        return []
+    expr, gate, parts = gated
     try:
         rows = con.execute(
             "SELECT ident, book_id, bm25(docs, 3.0, 3.0, 1.0) FROM docs "
-            "WHERE kind = '地图' AND docs MATCH ? "
+            "WHERE kind = '地图' AND docs MATCH ? AND docs MATCH ? "
             "ORDER BY bm25(docs, 3.0, 3.0, 1.0)",
-            (expr,),
+            (expr, gate),
         ).fetchall()
     except sqlite3.OperationalError:
         return []

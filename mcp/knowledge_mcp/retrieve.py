@@ -189,9 +189,37 @@ def _suggest_lines(idents: list[str]) -> list[str]:
     return out
 
 
+def _header_hits(q: str) -> list[dict]:
+    tokens = _tokens(q)
+    out: list[dict] = []
+    for item in iter_headers():
+        score, why, chaps = _score(item, tokens)
+        if score <= 0:
+            continue
+        bid = item["ident"].split("/", 1)[-1]
+        if item["kind"] == "书" and chaps:
+            idents = [f"{item['ident']}/{c}" for c in chaps]
+        else:
+            idents = [item["ident"]]
+        for ident in idents:
+            out.append(
+                {
+                    "ident": ident,
+                    "book_id": bid,
+                    "kind": item["kind"],
+                    "title": item["title"] or bid,
+                    "name": item["title"] or bid,
+                    "score": -score,
+                    "why": why,
+                }
+            )
+    out.sort(key=lambda h: h["score"])
+    return out
+
+
 def _format_landmarks(
     lit: list[dict], maps: list[dict], life: bool
-) -> str:
+) -> tuple[str, int, int, int]:
     lit_groups: dict[tuple[str, str], list[dict]] = {}
     lit_order: list[tuple[str, str]] = []
     for h in lit:
@@ -281,7 +309,12 @@ def _format_landmarks(
                 lines.append(f"   字面：含「{'、'.join(why)}」")
             else:
                 lines.append("   字面：正文")
-    return "\n".join(lines) + "\n"
+    return (
+        "\n".join(lines) + "\n",
+        len(both),
+        len(lit_only) + len(notes),
+        len(map_only),
+    )
 
 
 @guarded("kb_search")
@@ -292,13 +325,16 @@ def search(query: str) -> str:
         log_call("kb_search", False, step="输入")
         return out
     t0 = time.perf_counter()
+    extra: dict = {}
     try:
         lit = search_index(q)
+    except Exception:
+        lit = _header_hits(q)
+        extra["degraded"] = 1
+    try:
         maps = search_maps(q)
     except Exception:
-        out = _header_search(q)
-        log_call("kb_search", True, hits=0, query=q, degraded=1)
-        return out
+        maps = []
     if not lit and not maps:
         if not latin_blocked(q) and _life_query(q):
             maps = _life_fallback(q)
@@ -313,45 +349,22 @@ def search(query: str) -> str:
                 both=0,
                 lit=0,
                 map=0,
+                **extra,
             )
             return out
-    out = _format_landmarks(lit, maps, _life_query(q))
-    both = out.count("两路都中（优先）")
+    out, both_n, lit_n, map_n = _format_landmarks(lit, maps, _life_query(q))
     log_call(
         "kb_search",
         True,
         hits=min(out.count("身份："), SEARCH_LIMIT),
         query=q,
         search_ms=int((time.perf_counter() - t0) * 1000),
-        both=1 if "两路都中（优先）：" in out else 0,
-        lit=1 if "仅字面：" in out else 0,
-        map=1 if "仅地图：" in out else 0,
+        both=both_n,
+        lit=lit_n,
+        map=map_n,
+        **extra,
     )
     return out
-
-
-def _header_search(q: str) -> str:
-    tokens = _tokens(q)
-    ranked: list[tuple[float, dict, list[str], list[str]]] = []
-    for item in iter_headers():
-        score, why, hits = _score(item, tokens)
-        if score > 0:
-            ranked.append((score, item, why, hits))
-    ranked.sort(key=lambda r: r[0], reverse=True)
-    top = ranked[:SEARCH_LIMIT]
-    if not top:
-        return "路标：没有像的。抬头扫过了，没有贴近这个问法的。不要装查过。\n"
-    lines = [f"路标（最多 {SEARCH_LIMIT} 条，无正文；索引不可用，已退化成抬头）"]
-    for i, (_s, item, why, hits) in enumerate(top, 1):
-        lines.append(f"{i}. [{item['kind']}] {item['title'] or item['ident']}  身份：{item['ident']}")
-        lines.append(f"   像在：{'；'.join(why)}")
-        if hits:
-            lines.append(f"   建议块（最多 {CHAPTER_SUGGEST_LIMIT} 个）：")
-            for c in hits:
-                lines.append(f"   · {item['ident']}/{c}")
-        elif item["kind"] == "书":
-            lines.append(f"   没有命中章（可点 {item['ident']}/导读）")
-    return "\n".join(lines) + "\n"
 
 
 def _book_title(slug: str) -> str:
