@@ -81,8 +81,24 @@ def _fts_piece(piece: str) -> str:
     return piece
 
 
+def _expand_pieces(parts: list[str]) -> list[str]:
+    out: list[str] = []
+    for p in parts:
+        out.append(p)
+        if HAN.search(p) and len(p) >= 4:
+            out.extend(p[i : i + 3] for i in range(len(p) - 2))
+    # unique preserve order
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for p in out:
+        if p not in seen:
+            seen.add(p)
+            uniq.append(p)
+    return uniq
+
+
 def query_match(q: str) -> str | None:
-    parts = parse_query(q)
+    parts = _expand_pieces(parse_query(q))
     if not parts:
         return None
     return " OR ".join(_fts_piece(p) for p in parts)
@@ -197,12 +213,18 @@ def search_index(q: str) -> list[dict]:
     if not expr:
         return []
     con = _ensure()
-    real = _real_pieces(parts)
+    real = _real_pieces(_expand_pieces(parts))
     if real:
         dfs = [(p, _df(con, p)) for p in real]
-        if any(d == 0 for _, d in dfs):
+        latin_miss = any(
+            d == 0 and re.fullmatch(r"[A-Za-z0-9_]+", p) for p, d in dfs
+        )
+        if latin_miss:
             return []
-        long = [p for p, d in dfs if d > 0 and (len(p) >= 4 or re.fullmatch(r"[A-Za-z0-9_]{3,}", p))]
+        dfs = [(p, d) for p, d in dfs if d > 0]
+        if not dfs:
+            return []
+        long = [p for p, d in dfs if d > 0 and (len(p) >= 3 or re.fullmatch(r"[A-Za-z0-9_]{3,}", p))]
         if long:
             gate = " OR ".join(_fts_piece(p) for p in long)
         else:
@@ -235,9 +257,12 @@ def search_index(q: str) -> list[dict]:
                 "why": why,
             }
         )
+    boost_bits = _expand_pieces(parts)
     out.sort(
         key=lambda h: (
-            0 if any(p in (h.get("name") or "") for p in parts if len(p) >= 2) else 1,
+            0
+            if any(p in (h.get("name") or "") for p in boost_bits if len(p) >= 2)
+            else 1,
             h["score"],
         )
     )

@@ -92,6 +92,20 @@ def test_pytorch_is_empty_even_with_train_noise(kb):
     assert hits == []
 
 
+def test_query_with_extra_verb_still_hits_title(kb):
+    _plant_book(
+        kb,
+        "mao",
+        "毛泽东选集",
+        {"21-矛盾论.md": "# 矛盾论\n\n两种宇宙观。\n"},
+    )
+    from knowledge_mcp.index import invalidate, search_index
+
+    invalidate()
+    hits = search_index("矛盾论讲了什么")
+    assert hits and hits[0]["name"] == "矛盾论"
+
+
 def test_named_article_ranks_above_body_mentions(kb):
     _plant_book(
         kb,
