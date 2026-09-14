@@ -70,3 +70,71 @@ def test_scan_flags_dupes_and_short(kb):
     out = lint_notes("scan")
     assert "同一主题" in out
     assert "短" in out or "short" in out
+
+
+GOOD_MAP = (
+    "---\ntitle: 拖延心理学\ntype: 地图\nbook: 书/delay\ngenerated: true\n---\n\n"
+    "## 能解决什么\n- 总是拖到截止日期前一晚怎么办\n- 明明想改却往后推怎么办\n- 工作一难就刷手机怎么办\n\n"
+    "## 不解决什么\n- 怎么用 PyTorch\n\n"
+    "## 建议从哪读\n- 书/delay/正文\n\n"
+    "## 依据块\n- 总是拖到截止日期前一晚怎么办 → 书/delay/正文\n"
+    "- 明明想改却往后推怎么办 → 书/delay/正文\n"
+    "- 工作一难就刷手机怎么办 → 书/delay/正文\n"
+)
+
+
+def test_scan_flags_map_dead_link(kb):
+    plant_book(kb)
+    d = kb / "资料" / "书" / "delay"
+    (d / "地图.md").write_text(
+        GOOD_MAP.replace("书/delay/正文", "书/delay/没有这一章"),
+        encoding="utf-8",
+    )
+    from knowledge_mcp.notes import lint_notes
+
+    out = lint_notes("scan")
+    assert "地图" in out
+    assert "没有这一章" in out or "死" in out or "不存在" in out
+
+
+def test_scan_flags_stale_map(kb):
+    plant_book(kb)
+    d = kb / "资料" / "书" / "delay"
+    import time
+
+    (d / "地图.md").write_text(GOOD_MAP, encoding="utf-8")
+    time.sleep(0.05)
+    (d / "正文.md").write_text("原书不可改。又重切了。\n", encoding="utf-8")
+    from knowledge_mcp.notes import lint_notes
+
+    out = lint_notes("scan")
+    assert "stale" in out.lower() or "过期" in out or "早于" in out or "重切" in out
+
+
+def test_apply_map_update_does_not_touch_body(kb):
+    plant_book(kb)
+    d = kb / "资料" / "书" / "delay"
+    import json
+    from knowledge_mcp.notes import lint_notes
+
+    out = lint_notes(
+        "apply",
+        json.dumps(
+            [{"op": "update", "target": "书/delay/地图", "markdown": GOOD_MAP}],
+            ensure_ascii=False,
+        ),
+    )
+    assert not out.startswith("失败"), out
+    assert "原书不可改" in (d / "正文.md").read_text(encoding="utf-8")
+    assert (d / "地图.md").is_file()
+
+
+def test_apply_chapter_still_rejected(kb):
+    plant_book(kb)
+    from knowledge_mcp.notes import lint_notes
+
+    out = lint_notes("apply", '[{"op":"delete","target":"书/delay/正文"}]')
+    assert out.startswith("失败")
+    assert "原书不可改" in (kb / "资料" / "书" / "delay" / "正文.md").read_text(
+        encoding="utf-8"
+    )

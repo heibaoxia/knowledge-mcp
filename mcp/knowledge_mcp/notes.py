@@ -9,6 +9,7 @@ from pathlib import Path
 import yaml
 
 from knowledge_mcp.errors import fail
+from knowledge_mcp.index import MAP_FILE, ident_exists, invalidate, map_problems
 from knowledge_mcp.ingest import slugify, uniquify
 from knowledge_mcp.log import guarded, log_call, read_calls
 from knowledge_mcp.paths import dirs
@@ -345,7 +346,19 @@ def _note_path(ident: str) -> Path | None:
     return None
 
 
+def _map_path(ident: str) -> Path | None:
+    t = ident.replace("\\", "/").strip().strip("/")
+    if t.startswith("资料/"):
+        t = t[len("资料/") :]
+    bits = t.split("/")
+    if len(bits) == 3 and bits[0] == "书" and bits[2] in ("地图", MAP_FILE):
+        return dirs()["books"] / bits[1] / MAP_FILE
+    return None
+
+
 def _touches_book(raw: str) -> bool:
+    if _map_path(raw):
+        return False
     if _is_book_target(raw):
         return True
     p = Path(raw)
@@ -393,6 +406,13 @@ def _scan() -> str:
             tags = [tags]
         if meta.get("status") in ("stale", "过期") or "过期" in [str(t) for t in tags]:
             reasons.append("已标过期")
+        sources = meta.get("sources") or []
+        if isinstance(sources, str):
+            sources = [sources]
+        for s in sources:
+            s = str(s).strip()
+            if s and not ident_exists(s):
+                reasons.append(f"sources 死链 {s}")
         if title:
             titles.setdefault(title, []).append(ident)
         if reasons:
@@ -400,13 +420,27 @@ def _scan() -> str:
     for title, ids in titles.items():
         if len(ids) > 1:
             flags.append(f"- {', '.join(ids)} 《{title}》：标题重复")
+    books = dirs()["books"]
+    if books.is_dir():
+        for guide in sorted(books.glob("*/导读.md")):
+            d = guide.parent
+            ident = f"书/{d.name}/地图"
+            mp = d / MAP_FILE
+            if not mp.is_file():
+                flags.append(f"- {ident}：缺地图")
+            else:
+                for prob in map_problems(d):
+                    flags.append(f"- {ident}：{prob}")
+                blocks = [p for p in d.glob("*.md") if p.name not in ("导读.md", MAP_FILE)]
+                if blocks and mp.stat().st_mtime < max(p.stat().st_mtime for p in blocks):
+                    flags.append(f"- {ident}：早于重切")
     if not flags:
         out = "净化清单（只列不删）\n没有可疑项。\n"
     else:
         out = (
             "净化清单（只列不删）\n"
             + "\n".join(flags)
-            + "\n动手请 action=apply 提交 JSON 清单，只许笔记。\n"
+            + "\n动手请 action=apply 提交 JSON 清单，只许笔记和地图，不动书正文。\n"
         )
     log_call("kb_lint_notes", True, action="scan", n=len(flags))
     return out
@@ -443,26 +477,28 @@ def _apply(plan_text: str) -> str:
                     "净化-动手",
                     "清单碰到书，整单拒绝。",
                     "库不变",
-                    "从清单里拿掉书，只处理笔记。",
+                    "从清单里拿掉书正文，只处理笔记和地图。",
                 )
                 log_call("kb_lint_notes", False, action="apply", step="护书")
                 return out
-            if _note_path(raw) is None:
+            if _note_path(raw) is None and _map_path(raw) is None:
                 out = fail(
                     "净化-动手",
-                    f"身份不是笔记：{raw}。整单拒绝。",
+                    f"身份不是笔记或地图：{raw}。整单拒绝。",
                     "库不变",
-                    "只许 笔记/<slug>。",
+                    "只许 笔记/<slug> 或 书/<slug>/地图。",
                 )
                 log_call("kb_lint_notes", False, action="apply", step="护书")
                 return out
         op = str(item.get("op") or "").lower()
-        if op not in ("delete", "update", "merge"):
+        is_map = _map_path(str(item.get("target") or item.get("into") or "")) is not None
+        allowed = ("update", "stale") if is_map else ("delete", "update", "merge")
+        if op not in allowed:
             out = fail(
                 "净化-动手",
                 f"不认识的 op：{op}。整单拒绝。",
                 "库不变",
-                "op 用 delete / update / merge。",
+                "笔记 op 用 delete / update / merge；地图用 update / stale。",
             )
             log_call("kb_lint_notes", False, action="apply", step="op")
             return out
@@ -474,7 +510,44 @@ def _apply(plan_text: str) -> str:
             if path and path.is_file():
                 path.unlink()
                 done.append(f"删 笔记/{path.stem}")
+        elif op == "stale":
+            mp = _map_path(str(item.get("target") or ""))
+            if mp and mp.is_file():
+                meta, rest = split_frontmatter(mp.read_text(encoding="utf-8"))
+                meta["stale"] = True
+                mp.write_text(
+                    "---\n"
+                    + yaml.safe_dump(meta, allow_unicode=True, sort_keys=False)
+                    + "---\n\n"
+                    + rest,
+                    encoding="utf-8",
+                )
+                invalidate()
+                done.append(f"标过期 书/{mp.parent.name}/地图")
         elif op == "update":
+            mp = _map_path(str(item.get("target") or ""))
+            if mp is not None:
+                md = str(item.get("markdown") or "")
+                old = mp.read_text(encoding="utf-8") if mp.is_file() else None
+                mp.parent.mkdir(parents=True, exist_ok=True)
+                mp.write_text(md, encoding="utf-8")
+                probs = map_problems(mp.parent)
+                if probs:
+                    if old is None:
+                        mp.unlink(missing_ok=True)
+                    else:
+                        mp.write_text(old, encoding="utf-8")
+                    out = fail(
+                        "净化-动手",
+                        "地图不合格：" + "；".join(probs),
+                        "库不变",
+                        "先改到身份都存在再 apply。",
+                    )
+                    log_call("kb_lint_notes", False, action="apply", step="地图")
+                    return out
+                invalidate()
+                done.append(f"改 书/{mp.parent.name}/地图")
+                continue
             path = _note_path(str(item.get("target") or ""))
             md = item.get("markdown") or ""
             if path and md:
