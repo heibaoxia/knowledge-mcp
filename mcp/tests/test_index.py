@@ -232,3 +232,26 @@ def test_map_file_not_in_literal_index(kb):
     hits = search_index("UNIQUE_MAP_TOKEN")
     assert all(h.get("kind") != "书" or "地图" not in h.get("ident", "") for h in hits)
     assert all("UNIQUE_MAP_TOKEN" not in str(h.get("ident")) for h in hits)
+
+
+def test_search_maps_hits_solves_not_notsolves(kb):
+    _plant_book(kb, "courage", "被讨厌的勇气", {"11-第四夜.md": "# 第四夜\n\n对话。\n"})
+    (kb / "资料" / "书" / "courage" / "地图.md").write_text(
+        "---\ntitle: 被讨厌的勇气\ntype: 地图\nbook: 书/courage\ngenerated: true\n---\n\n"
+        "## 能解决什么\n- 总是在意别人是不是讨厌我该怎么办\n"
+        "- 怕被别人讨厌怎么办\n- 人际关系里总寻求认可怎么办\n\n"
+        "## 不解决什么\n- 怎么用 PyTorch 训练网络\n\n"
+        "## 建议从哪读\n- 书/courage/第四夜\n\n"
+        "## 依据块\n- 总是在意别人是不是讨厌我该怎么办 → 书/courage/第四夜\n"
+        "- 怕被别人讨厌怎么办 → 书/courage/第四夜\n"
+        "- 人际关系里总寻求认可怎么办 → 书/courage/第四夜\n",
+        encoding="utf-8",
+    )
+    from knowledge_mcp.index import invalidate, search_index, search_maps
+
+    invalidate()
+    assert search_maps("PyTorch") == [] or all("PyTorch" not in str(h) for h in search_maps("PyTorch"))
+    hits = search_maps("总是在意别人是不是讨厌我该怎么办")
+    assert hits and hits[0]["book_id"] == "courage"
+    lit = search_index("讨厌")
+    assert all("/地图" not in h["ident"] for h in lit)

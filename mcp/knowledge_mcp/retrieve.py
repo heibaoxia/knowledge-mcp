@@ -2,12 +2,23 @@
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 
 import yaml
 
 from knowledge_mcp.errors import fail
-from knowledge_mcp.index import SKIP_FILES, _block_name, search_index
+from knowledge_mcp.index import (
+    HAN,
+    MAP_FILE,
+    SKIP_FILES,
+    _block_name,
+    latin_blocked,
+    map_index_text,
+    parse_map,
+    search_index,
+    search_maps,
+)
 from knowledge_mcp.log import guarded, log_call
 from knowledge_mcp.paths import dirs
 
@@ -104,6 +115,175 @@ def _score(item: dict, tokens: list[str]) -> tuple[float, list[str], list[str]]:
     return total, why, hits[:CHAPTER_SUGGEST_LIMIT]
 
 
+LIFE_MARKS = ("怎么办", "我总是")
+EMPTY_LANDMARKS = "路标：没有像的。索引扫过了，没有贴近这个问法的。不要装查过。\n"
+
+
+def _life_query(q: str) -> bool:
+    return any(m in q for m in LIFE_MARKS)
+
+
+def _map_suggest(slug: str) -> list[str]:
+    p = dirs()["books"] / slug / MAP_FILE
+    if not p.is_file():
+        return []
+    try:
+        parsed = parse_map(p.read_text(encoding="utf-8"))
+    except OSError:
+        return []
+    return [s for s in (parsed.get("suggest") or []) if s]
+
+
+def _life_fallback(q: str) -> list[dict]:
+    grams: list[str] = []
+    for run in HAN.findall(q):
+        grams.extend(run[i : i + 2] for i in range(len(run) - 1))
+    scored: list[tuple[int, dict]] = []
+    books = dirs()["books"]
+    if not books.is_dir():
+        return []
+    for guide in books.glob("*/导读.md"):
+        mp = guide.parent / MAP_FILE
+        if not mp.is_file():
+            continue
+        try:
+            raw = mp.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        blob = map_index_text(raw)
+        n = sum(1 for g in grams if g in blob)
+        if n <= 0:
+            continue
+        slug = guide.parent.name
+        scored.append(
+            (
+                n,
+                {
+                    "ident": f"书/{slug}",
+                    "book_id": slug,
+                    "kind": "书",
+                    "suggest": _map_suggest(slug),
+                    "why": [g for g in grams if g in blob][:4],
+                    "score": -n,
+                },
+            )
+        )
+    scored.sort(key=lambda x: -x[0])
+    return [h for _, h in scored[:1]]
+
+
+def _why_bits(items: list[dict]) -> list[str]:
+    bits: list[str] = []
+    for it in items:
+        for p in it.get("why") or []:
+            s = str(p)
+            if s and s not in bits and len(s) <= 20:
+                bits.append(s)
+    return bits[:4]
+
+
+def _suggest_lines(idents: list[str]) -> list[str]:
+    out = ["   建议块："]
+    for ident in idents[:CHAPTER_SUGGEST_LIMIT]:
+        out.append(f"   · {ident}")
+    return out
+
+
+def _format_landmarks(
+    lit: list[dict], maps: list[dict], life: bool
+) -> str:
+    lit_groups: dict[tuple[str, str], list[dict]] = {}
+    lit_order: list[tuple[str, str]] = []
+    for h in lit:
+        key = (str(h["kind"]), str(h["book_id"]))
+        if key not in lit_groups:
+            lit_groups[key] = []
+            lit_order.append(key)
+        lit_groups[key].append(h)
+    map_by: dict[str, dict] = {}
+    map_order: list[str] = []
+    for h in maps:
+        bid = str(h["book_id"])
+        if bid not in map_by:
+            map_by[bid] = h
+            map_order.append(bid)
+    lit_books = [bid for kind, bid in lit_order if kind == "书"]
+    notes = [(kind, bid) for kind, bid in lit_order if kind != "书"]
+    both = [bid for bid in lit_books if bid in map_by]
+    lit_only = [bid for bid in lit_books if bid not in map_by]
+    map_only = [bid for bid in map_order if bid not in set(lit_books)]
+    if life:
+        rest = [("仅地图", "书", b) for b in map_only] + [
+            ("仅字面", "书", b) for b in lit_only
+        ] + [("仅字面", k, b) for k, b in notes]
+    else:
+        rest = [("仅字面", "书", b) for b in lit_only] + [
+            ("仅字面", k, b) for k, b in notes
+        ] + [("仅地图", "书", b) for b in map_only]
+    rows: list[tuple[str, str, str]] = [("两路都中", "书", b) for b in both] + rest
+    lines = ["路标（无正文）"]
+    n = 0
+    last_col = None
+    col_label = {
+        "两路都中": "两路都中（优先）：",
+        "仅字面": "仅字面：",
+        "仅地图": "仅地图：",
+    }
+    for col, kind, bid in rows:
+        n += 1
+        if n > SEARCH_LIMIT:
+            break
+        if col != last_col:
+            lines.append(col_label[col])
+            last_col = col
+        if kind == "书":
+            ident = f"书/{bid}"
+            title = _book_title(bid)
+            lit_items = lit_groups.get(("书", bid), [])
+            mp = map_by.get(bid)
+            sug: list[str] = []
+            for it in lit_items:
+                if it["ident"] not in sug:
+                    sug.append(it["ident"])
+            if mp:
+                for s in mp.get("suggest") or []:
+                    if s not in sug:
+                        sug.append(s)
+            if not sug and mp:
+                sug = list(mp.get("suggest") or [])
+            lines.append(f"{n}. [{kind}] {title}  身份：{ident}")
+            if sug:
+                lines.extend(_suggest_lines(sug))
+            lit_why = _why_bits(lit_items)
+            map_why = _why_bits([mp] if mp else [])
+            if col == "两路都中":
+                lw = "、".join(lit_why) if lit_why else "正文"
+                mw = "、".join(map_why) if map_why else "能解决什么"
+                lines.append(f"   字面：含「{lw}」；地图：能解决「{mw}」")
+            elif col == "仅字面":
+                if lit_why:
+                    lines.append(f"   字面：含「{'、'.join(lit_why)}」")
+                else:
+                    lines.append("   字面：正文")
+            else:
+                if map_why:
+                    lines.append(f"   地图：能解决「{'、'.join(map_why)}」")
+                else:
+                    lines.append("   地图：能解决什么")
+        else:
+            items = lit_groups[(kind, bid)]
+            ident = f"笔记/{bid}"
+            title = items[0].get("title") or items[0].get("name") or bid
+            lines.append(f"{n}. [{kind}] {title}  身份：{ident}")
+            lines.extend(_suggest_lines([it["ident"] for it in items]))
+            why = _why_bits(items)
+            if why:
+                lines.append(f"   字面：含「{'、'.join(why)}」")
+            else:
+                lines.append("   字面：正文")
+    return "\n".join(lines) + "\n"
+
+
 @guarded("kb_search")
 def search(query: str) -> str:
     q = (query or "").strip()
@@ -111,53 +291,42 @@ def search(query: str) -> str:
         out = fail("检索", "没有问什么。", "无", "用一句话说想了解什么。")
         log_call("kb_search", False, step="输入")
         return out
+    t0 = time.perf_counter()
     try:
-        hits = search_index(q)
+        lit = search_index(q)
+        maps = search_maps(q)
     except Exception:
         out = _header_search(q)
         log_call("kb_search", True, hits=0, query=q, degraded=1)
         return out
-    if not hits:
-        out = "路标：没有像的。索引扫过了，没有贴近这个问法的。不要装查过。\n"
-        log_call("kb_search", True, hits=0, query=q)
-        return out
-    groups: dict[tuple[str, str], list[dict]] = {}
-    order: list[tuple[str, str]] = []
-    for h in hits:
-        key = (str(h["kind"]), str(h["book_id"]))
-        if key not in groups:
-            groups[key] = []
-            order.append(key)
-        groups[key].append(h)
-    lines = [f"路标（最多 {SEARCH_LIMIT} 条，无正文）"]
-    shown = 0
-    for kind, bid in order:
-        shown += 1
-        if shown > SEARCH_LIMIT:
-            break
-        items = groups[(kind, bid)]
-        if kind == "书":
-            ident = f"书/{bid}"
-            title = _book_title(bid)
-        else:
-            ident = f"笔记/{bid}"
-            title = items[0].get("title") or items[0].get("name") or bid
-        lines.append(f"{shown}. [{kind}] {title}  身份：{ident}")
-        why = [
-            p
-            for p in (items[0].get("why") or [])
-            if p and p not in ident and len(p) <= 20
-        ]
-        if why:
-            lines.append(f"   像在：含「{'、'.join(str(x) for x in why[:4])}」")
-        else:
-            lines.append("   像在：正文")
-        lines.append(f"   命中 {len(items)} 块")
-        lines.append(f"   建议块（最多 {CHAPTER_SUGGEST_LIMIT} 个）：")
-        for it in items[:CHAPTER_SUGGEST_LIMIT]:
-            lines.append(f"   · {it['ident']}")
-    out = "\n".join(lines) + "\n"
-    log_call("kb_search", True, hits=min(shown, SEARCH_LIMIT), query=q)
+    if not lit and not maps:
+        if not latin_blocked(q) and _life_query(q):
+            maps = _life_fallback(q)
+        if not lit and not maps:
+            out = EMPTY_LANDMARKS
+            log_call(
+                "kb_search",
+                True,
+                hits=0,
+                query=q,
+                search_ms=int((time.perf_counter() - t0) * 1000),
+                both=0,
+                lit=0,
+                map=0,
+            )
+            return out
+    out = _format_landmarks(lit, maps, _life_query(q))
+    both = out.count("两路都中（优先）")
+    log_call(
+        "kb_search",
+        True,
+        hits=min(out.count("身份："), SEARCH_LIMIT),
+        query=q,
+        search_ms=int((time.perf_counter() - t0) * 1000),
+        both=1 if "两路都中（优先）：" in out else 0,
+        lit=1 if "仅字面：" in out else 0,
+        map=1 if "仅地图：" in out else 0,
+    )
     return out
 
 

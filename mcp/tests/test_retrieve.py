@@ -363,3 +363,111 @@ def test_read_map_by_ident(kb):
     assert "MAP_ONLY_MARK" not in chap
     assert "邻块" in chap
     assert "地图" not in chap.split("邻块")[-1]
+
+
+def _plant_map(kb, slug, title, solves, not_solves, chapter):
+    d = kb / "资料" / "书" / slug
+    ids = f"书/{slug}/{chapter}"
+    ev = "\n".join(f"- {s} → {ids}" for s in solves)
+    (d / "地图.md").write_text(
+        f"---\ntitle: {title}\ntype: 地图\nbook: 书/{slug}\ngenerated: true\n---\n\n"
+        f"## 能解决什么\n" + "\n".join(f"- {s}" for s in solves) + "\n\n"
+        f"## 不解决什么\n" + "\n".join(f"- {s}" for s in not_solves) + "\n\n"
+        f"## 建议从哪读\n- {ids}\n\n## 依据块\n{ev}\n",
+        encoding="utf-8",
+    )
+
+
+def test_three_columns_overlap_by_book(kb):
+    plant_book(kb, "courage", "被讨厌的勇气", "阿德勒。", ["第四夜 要有被讨厌的勇气"], ["正文里写讨厌两个字。"])
+    _plant_map(
+        kb, "courage", "被讨厌的勇气",
+        ["总是在意别人是不是讨厌我该怎么办", "人际关系里总怕被讨厌怎么办", "别人看法和我的事怎么分开"],
+        ["怎么训练神经网络"],
+        "第四夜 要有被讨厌的勇气",
+    )
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("讨厌")
+    assert "SECRET" not in out
+    assert "两路都中" in out
+    assert "书/courage" in out
+    assert "书/courage/第四夜 要有被讨厌的勇气" in out
+    assert "正文里写" not in out
+
+
+def test_map_only_life_query(kb):
+    plant_book(kb, "courage", "被讨厌的勇气", "阿德勒。", ["第三夜 让干涉你生活的人见鬼去"], ["哲人谈话，没有这些口语。"])
+    plant_book(kb, "mao", "毛泽东选集", "著作。", ["实践论"], ["实践论正文讲认识。"])
+    _plant_map(
+        kb, "courage", "被讨厌的勇气",
+        ["总是在意别人是不是讨厌我该怎么办", "怕被别人讨厌还想做自己怎么办", "别人干涉我的生活该怎么办"],
+        ["革命战争怎么打", "怎么用 PyTorch"],
+        "第三夜 让干涉你生活的人见鬼去",
+    )
+    _plant_map(
+        kb, "mao", "毛泽东选集",
+        ["矛盾论讲了什么", "实践和认识是什么关系", "怎么分析中国社会各阶级"],
+        ["个人怕被讨厌怎么办", "怎么用 PyTorch"],
+        "实践论",
+    )
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    q = "我总是很在意别人是不是讨厌我，该怎么办"
+    assert "课题分离" not in q and "阿德勒" not in q
+    out = search(q)
+    assert "被讨厌的勇气" in out
+    assert "毛泽东选集" not in out
+    assert "仅地图" in out or "两路都中" in out
+    assert "课题分离" not in out
+
+
+def test_literal_only_column(kb):
+    plant_book(kb, "delay", "拖延心理学", "教材。", ["第一章 为什么拖"], ["UNIQUE_LIT_TOKEN 出现在正文。"])
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("UNIQUE_LIT_TOKEN")
+    assert "拖延心理学" in out
+    assert "仅字面" in out
+    assert "两路都中" not in out
+    assert "UNIQUE_LIT_TOKEN" not in out
+
+
+def test_pytorch_empty_with_maps(kb):
+    plant_book(kb, "psy", "心理学与生活", "教材。", ["神经"], ["训练神经网络的章节"])
+    _plant_map(
+        kb, "psy", "心理学与生活",
+        ["短时记忆是怎么回事", "心理学三大流派有什么区别", "梦和意识状态怎么解释"],
+        ["怎么用 PyTorch 训练一个神经网络"],
+        "神经",
+    )
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("怎么用 PyTorch 训练一个神经网络")
+    assert "心理学与生活" not in out
+    assert "没有" in out or "0" in out
+
+
+def test_life_fallback_still_returns_map(kb):
+    plant_book(kb, "courage", "被讨厌的勇气", "介绍。", ["第四夜"], ["完全不相干的哲人对话。"])
+    _plant_map(
+        kb, "courage", "被讨厌的勇气",
+        ["总是在意别人是不是讨厌我该怎么办", "怕被讨厌还想做自己怎么办", "别人的课题我不要扛"],
+        ["量子场论"],
+        "第四夜",
+    )
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("我总是很在意别人是不是讨厌我，该怎么办")
+    assert "被讨厌的勇气" in out
+    assert "仅地图" in out or "两路都中" in out
