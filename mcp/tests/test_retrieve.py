@@ -456,6 +456,18 @@ def test_pytorch_empty_with_maps(kb):
     assert "没有" in out or "0" in out
 
 
+def test_quoted_article_keeps_host_book(kb):
+    plant_book(kb, "mao", "毛泽东选集", "著作。", ["实践论"], ["认识的两次飞跃。"])
+    plant_book(kb, "psy", "心理学与生活", "教材。", ["记忆"], ["短时记忆。"])
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("《实践论》说认识要经过哪两次飞跃")
+    assert "毛泽东选集" in out
+    assert "心理学与生活" not in out
+
+
 def test_titled_query_does_not_drag_unrelated_book(kb):
     plant_book(kb, "courage", "被讨厌的勇气", "阿德勒。", ["第四夜 要有被讨厌的勇气"], ["勇气正文"])
     plant_book(kb, "mao", "毛泽东选集", "著作。", ["实践论"], ["也谈勇气与讨厌。"])

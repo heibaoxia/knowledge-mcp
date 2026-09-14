@@ -261,7 +261,14 @@ def _format_landmarks(
     if quoted:
         def _quoted_ok(bid: str) -> bool:
             title = _book_title(bid)
-            return any(x in title for x in quoted)
+            items = lit_groups.get(("书", bid), [])
+            blob = title + " ".join(
+                (it.get("ident") or "") + (it.get("name") or "") for it in items
+            )
+            mp = map_by.get(bid)
+            if mp:
+                blob += " ".join(mp.get("suggest") or [])
+            return any(x in blob for x in quoted)
 
         both = [b for b in both if _quoted_ok(b)]
         lit_only = [b for b in lit_only if _quoted_ok(b)]
