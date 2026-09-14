@@ -173,6 +173,59 @@ def test_real_epub_inbox_makes_guide_and_archives(kb):
     assert (kb / "原始资料归档" / "yanshou.epub").exists()
 
 
+def test_clean_heading_strips_epub_anchor():
+    from knowledge_mcp.ingest import clean_heading
+
+    assert clean_heading("实践论[\\*](#id0a)") == "实践论"
+
+
+def test_split_uses_h3_not_h1_volume():
+    from knowledge_mcp.ingest import split_markdown
+
+    text = "# 第一卷\n\n前言若干。\n\n### 实践论\n\n实践论正文。\n\n### 矛盾论\n\n矛盾论正文。\n"
+    title, _, parts = split_markdown(text, "毛选")
+    names = [n for n, _ in parts]
+    assert "实践论" in names
+    assert "矛盾论" in names
+    assert "第一卷" not in names
+
+
+def test_structure_lines_ignored_when_atx_present():
+    from knowledge_mcp.ingest import split_markdown
+
+    text = "# 第一章 生活的意义\n\n正文。\n\n一、先说土地\n\n还是同一章。\n"
+    _, _, parts = split_markdown(text, "书")
+    assert len(parts) == 1
+    assert "生活的意义" in parts[0][0]
+
+
+def test_structure_lines_used_when_no_atx():
+    from knowledge_mcp.ingest import split_markdown
+
+    text = "第一章 生活的意义\n\n甲段。\n\n第二章 心理与身体\n\n乙段。\n"
+    _, _, parts = split_markdown(text, "书")
+    assert len(parts) == 2
+    assert "生活的意义" in parts[0][0]
+
+
+def test_split_keeps_text_before_first_heading():
+    from knowledge_mcp.ingest import split_markdown
+
+    text = "出版说明在前。\n\n# 正章\n\n章正文。\n"
+    _, _, parts = split_markdown(text, "书")
+    blob = "".join(b for _, b in parts)
+    assert "出版说明在前" in blob
+
+
+def test_conservation_over_99_percent():
+    from knowledge_mcp.ingest import split_markdown
+
+    text = "# A\n\n" + ("字" * 1000) + "\n\n### B\n\n" + ("词" * 1000) + "\n"
+    _, _, parts = split_markdown(text, "书")
+    got = sum(len(b) for _, b in parts)
+    assert got >= int(len(text) * 0.99)
+
+
 def test_guide_comes_from_headings_not_llm(kb, monkeypatch):
     md = fake_markdown("矛盾论")
     _patch_convert(monkeypatch, md)

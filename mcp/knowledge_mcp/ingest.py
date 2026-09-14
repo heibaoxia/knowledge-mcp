@@ -149,12 +149,60 @@ def unique_slug(base: str) -> str:
     return f"{base}-{n}"
 
 
+ATX_RE = re.compile(r"^(#{1,6}) (.+)$")
+STRUCT_RE = re.compile(
+    r"^(第[0-9一二三四五六七八九十百千零〇两]+[章节篇回]"
+    r"|[一二三四五六七八九十]+、"
+    r"|（[一二三四五六七八九十]+）"
+    r"|壹、)"
+)
+HEADING_JUNK_RE = re.compile(r"\[\\?\*\]\(#id[^)]*\)")
+MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+
+
+def clean_heading(name: str) -> str:
+    """剥 epub 残渣，只用于命名和切点。"""
+    s = str(name)
+    s = HEADING_JUNK_RE.sub("", s)
+    s = MD_LINK_RE.sub(r"\1", s)
+    s = re.sub(r"</?a\b[^>]*>", "", s, flags=re.I)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def is_structure_line(line: str) -> bool:
+    """无 ATX 时才当切点：第一章 / 一、 / （一）。"""
+    s = line.strip()
+    if not s or len(s) > 40:
+        return False
+    if s[-1] in "。！？：；":
+        return False
+    return bool(STRUCT_RE.match(s))
+
+
+def _atx_heads(lines: list[str]) -> list[tuple[int, int, str]]:
+    found: list[tuple[int, int, str]] = []
+    for i, line in enumerate(lines):
+        m = ATX_RE.match(line)
+        if m:
+            found.append((i, len(m.group(1)), clean_heading(m.group(2))))
+    return found
+
+
+def _leaf_cuts(heads: list[tuple[int, int, str]]) -> list[tuple[int, str]]:
+    cuts: list[tuple[int, str]] = []
+    for n, (i, lvl, name) in enumerate(heads):
+        nxt = heads[n + 1][1] if n + 1 < len(heads) else None
+        if nxt is None or nxt <= lvl:
+            cuts.append((i, name or f"第{n + 1}段"))
+    return cuts
+
+
 def _heads(lines: list[str], prefix: str) -> list[tuple[int, str]]:
     out = []
     bang = prefix + "#"
     for i, line in enumerate(lines):
         if line.startswith(prefix) and not line.startswith(bang):
-            out.append((i, line[len(prefix) :].strip()))
+            out.append((i, clean_heading(line[len(prefix) :])))
     return out
 
 
@@ -181,46 +229,42 @@ def pick_title(candidates: list[str], fallback: str, meta_title: str | None) -> 
 def split_markdown(
     text: str, fallback_title: str, *, meta_title: str | None = None
 ) -> tuple[str, list[str], list[tuple[str, str]]]:
-    """切书，同时给出标题候选。
+    """切书成自然篇/章，同时给出标题候选。
 
-    切法：
-    - 两个及以上一级标题：按一级标题切。
-    - 只有一个一级标题、下面有二级标题：标题那一段并进第一章，不单独成块
-      （一章都没少），也不丢在切点前面。
-    - 都没有：整篇一块。
-
-    标题优先级：EPUB 元数据 dc:title -> 第一个不像版权页的一级标题 -> 原始文件名。
+    有 ATX 标题：切在叶子标题（有子标题就下沉；卷名并进其后第一篇）。
+    没有 ATX：才把「第一章 / 一、」当切点。
+    第一个切点之前的字并进第一块。不按字数再切文件。
     """
     lines = text.splitlines()
-    h1 = _heads(lines, "# ")
-    h2 = _heads(lines, "## ")
-    if len(h1) >= 2:
-        cuts = h1
-        prefix = None
-    elif h1 and h2:
-        cuts = [(h2[0][0], h2[0][1])] + h2[1:]
-        prefix = h1[0][0]
-    elif h2:
-        cuts = h2
-        prefix = None
+    atx = _atx_heads(lines)
+    h1 = [(i, name) for i, lvl, name in atx if lvl == 1]
+    h2 = [(i, name) for i, lvl, name in atx if lvl == 2]
+    if atx:
+        cuts = _leaf_cuts(atx)
     else:
-        cuts = []
-        prefix = None
-    candidates = ([name for _, name in h1]
-                  or [name for _, name in h2]
-                  or [fallback_title])
+        cuts = [
+            (i, clean_heading(line.strip()))
+            for i, line in enumerate(lines)
+            if is_structure_line(line)
+        ]
+    candidates = (
+        [name for _, name in h1]
+        or [name for _, name in h2]
+        or [name for _, name in cuts]
+        or [fallback_title]
+    )
     title = pick_title(candidates, fallback_title, meta_title)
     parts: list[tuple[str, str]] = []
     if not cuts:
         name = h1[0][1] if h1 else fallback_title
         body = text if text.endswith("\n") else text + "\n"
-        parts.append((name, body))
+        parts.append((clean_heading(name) or fallback_title, body))
     else:
         for n, (i, name) in enumerate(cuts):
-            start = prefix if (n == 0 and prefix is not None) else i
+            start = 0 if n == 0 else i
             end = cuts[n + 1][0] if n + 1 < len(cuts) else len(lines)
             body = "\n".join(lines[start:end]).strip() + "\n"
-            parts.append((name, body))
+            parts.append((name or fallback_title, body))
     return title, candidates, parts
 
 
