@@ -35,6 +35,10 @@ def test_proposal_lands_in_repair_folder(kb):
 def test_crash_uses_fail_handoff(kb, monkeypatch):
     from knowledge_mcp import retrieve
 
+    monkeypatch.setattr(
+        "knowledge_mcp.index._ensure",
+        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
     monkeypatch.setattr(retrieve, "iter_headers", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
     out = retrieve.search("拖延")
     assert out.startswith("失败")

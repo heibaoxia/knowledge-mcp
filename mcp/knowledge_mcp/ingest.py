@@ -151,13 +151,14 @@ def unique_slug(base: str) -> str:
 
 ATX_RE = re.compile(r"^(#{1,6}) (.+)$")
 STRUCT_RE = re.compile(
-    r"^(第[0-9一二三四五六七八九十百千零〇两]+[章节篇回]"
+    r"^(第[0-9一二三四五六七八九十百千零〇两]+[章节篇]"
     r"|[一二三四五六七八九十]+、"
     r"|（[一二三四五六七八九十]+）"
     r"|壹、)"
 )
 HEADING_JUNK_RE = re.compile(r"\[\\?\*\]\(#id[^)]*\)")
 MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+VOLUME_RE = re.compile(r"第[0-9一二三四五六七八九十百千零〇两]+卷")
 
 
 def clean_heading(name: str) -> str:
@@ -188,29 +189,102 @@ def _atx_heads(lines: list[str]) -> list[tuple[int, int, str]]:
     return found
 
 
-def _leaf_cuts(heads: list[tuple[int, int, str]]) -> list[tuple[int, str]]:
+def _cut_level(atx: list[tuple[int, int, str]]) -> int:
+    """篇/章这一层：毛选落到 h3，多 h1 的扁平书停在 h1，单书名+章停在 h2。"""
+    lvls = [l for _, l, _ in atx if l <= 3]
+    if not lvls:
+        return max((l for _, l, _ in atx), default=1)
+    n1, n2, n3 = lvls.count(1), lvls.count(2), lvls.count(3)
+    vol = any(VOLUME_RE.search(n) for _, l, n in atx if l == 1)
+    if n3 and (vol or n1 <= 1):
+        if n2 >= 4 and not vol:
+            return 2
+        return 3
+    if n2 and n1 <= 1:
+        return 2
+    if n1:
+        return 1
+    if n2:
+        return 2
+    return 3
+
+
+def _natural_cuts(atx: list[tuple[int, int, str]], L: int) -> list[tuple[int, str]]:
     cuts: list[tuple[int, str]] = []
-    for n, (i, lvl, name) in enumerate(heads):
-        nxt = heads[n + 1][1] if n + 1 < len(heads) else None
-        if nxt is None or nxt <= lvl:
-            cuts.append((i, name or f"第{n + 1}段"))
+    for n, (i, lvl, name) in enumerate(atx):
+        if lvl > L:
+            continue
+        if lvl == L:
+            cuts.append((i, name))
+            continue
+        has_L = False
+        for _, nl, _ in atx[n + 1 :]:
+            if nl <= lvl:
+                break
+            if nl == L:
+                has_L = True
+                break
+        if not has_L:
+            cuts.append((i, name))
     return cuts
 
 
-def _heads(lines: list[str], prefix: str) -> list[tuple[int, str]]:
-    out = []
-    bang = prefix + "#"
-    for i, line in enumerate(lines):
-        if line.startswith(prefix) and not line.startswith(bang):
-            out.append((i, clean_heading(line[len(prefix) :])))
+def _part_starts(
+    lines: list[str],
+    cuts: list[tuple[int, str]],
+    atx: list[tuple[int, int, str]],
+    L: int,
+) -> list[int]:
+    """第一块从文首；卷/时期等上级标题并进其后第一块。"""
+    atx_lvl = {i: lvl for i, lvl, _ in atx}
+    starts: list[int] = []
+    for n, (i, _) in enumerate(cuts):
+        if n == 0:
+            starts.append(0)
+            continue
+        prev_i = cuts[n - 1][0]
+        start = i
+        j = i - 1
+        while j > prev_i:
+            if not lines[j].strip():
+                j -= 1
+                continue
+            lvl = atx_lvl.get(j)
+            if lvl is not None and lvl < L:
+                start = j
+                j -= 1
+                continue
+            break
+        starts.append(start)
+    return starts
+
+
+def _uniq_name(name: str, seen: set[str]) -> str:
+    base = name or "正文"
+    if base not in seen:
+        seen.add(base)
+        return base
+    k = 2
+    while f"{base}-{k}" in seen:
+        k += 1
+    out = f"{base}-{k}"
+    seen.add(out)
     return out
 
 
-def _ordered_heads(lines: list[str]) -> list[tuple[int, str]]:
-    """所有一级/二级标题，按在原文里出现的先后排。"""
-    found = [(i, name) for i, name in _heads(lines, "# ")]
-    found += [(i, name) for i, name in _heads(lines, "## ")]
-    return sorted(found)
+def _name_from_body(body: str) -> str:
+    for line in body.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        m = ATX_RE.match(s)
+        if m:
+            s = clean_heading(m.group(2))
+        else:
+            s = clean_heading(s)
+        if s:
+            return s[:20]
+    return "正文"
 
 
 def pick_title(candidates: list[str], fallback: str, meta_title: str | None) -> str:
@@ -231,7 +305,7 @@ def split_markdown(
 ) -> tuple[str, list[str], list[tuple[str, str]]]:
     """切书成自然篇/章，同时给出标题候选。
 
-    有 ATX 标题：切在叶子标题（有子标题就下沉；卷名并进其后第一篇）。
+    有 ATX 标题：切在篇/章这一层（毛选落到 h3，不撕 h4 节；卷/时期并进其后第一篇）。
     没有 ATX：才把「第一章 / 一、」当切点。
     第一个切点之前的字并进第一块。不按字数再切文件。
     """
@@ -240,13 +314,16 @@ def split_markdown(
     h1 = [(i, name) for i, lvl, name in atx if lvl == 1]
     h2 = [(i, name) for i, lvl, name in atx if lvl == 2]
     if atx:
-        cuts = _leaf_cuts(atx)
+        L = _cut_level(atx)
+        cuts = _natural_cuts(atx, L)
+        starts = _part_starts(lines, cuts, atx, L)
     else:
         cuts = [
             (i, clean_heading(line.strip()))
             for i, line in enumerate(lines)
             if is_structure_line(line)
         ]
+        starts = [0 if n == 0 else i for n, (i, _) in enumerate(cuts)]
     candidates = (
         [name for _, name in h1]
         or [name for _, name in h2]
@@ -260,11 +337,12 @@ def split_markdown(
         body = text if text.endswith("\n") else text + "\n"
         parts.append((clean_heading(name) or fallback_title, body))
     else:
-        for n, (i, name) in enumerate(cuts):
-            start = 0 if n == 0 else i
-            end = cuts[n + 1][0] if n + 1 < len(cuts) else len(lines)
+        seen: set[str] = set()
+        for n, (_i, name) in enumerate(cuts):
+            start = starts[n]
+            end = starts[n + 1] if n + 1 < len(starts) else len(lines)
             body = "\n".join(lines[start:end]).strip() + "\n"
-            parts.append((name or fallback_title, body))
+            parts.append((_uniq_name(name or _name_from_body(body), seen), body))
     return title, candidates, parts
 
 

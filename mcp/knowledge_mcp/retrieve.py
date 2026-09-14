@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 
 from knowledge_mcp.errors import fail
+from knowledge_mcp.index import _block_name, search_index
 from knowledge_mcp.log import guarded, log_call
 from knowledge_mcp.paths import dirs
 
@@ -110,6 +111,57 @@ def search(query: str) -> str:
         out = fail("检索", "没有问什么。", "无", "用一句话说想了解什么。")
         log_call("kb_search", False, step="输入")
         return out
+    try:
+        hits = search_index(q)
+    except Exception:
+        out = _header_search(q)
+        log_call("kb_search", True, hits=0, query=q, degraded=1)
+        return out
+    if not hits:
+        out = "路标：没有像的。索引扫过了，没有贴近这个问法的。不要装查过。\n"
+        log_call("kb_search", True, hits=0, query=q)
+        return out
+    groups: dict[tuple[str, str], list[dict]] = {}
+    order: list[tuple[str, str]] = []
+    for h in hits:
+        key = (str(h["kind"]), str(h["book_id"]))
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(h)
+    lines = [f"路标（最多 {SEARCH_LIMIT} 条，无正文）"]
+    shown = 0
+    for kind, bid in order:
+        shown += 1
+        if shown > SEARCH_LIMIT:
+            break
+        items = groups[(kind, bid)]
+        if kind == "书":
+            ident = f"书/{bid}"
+            title = _book_title(bid)
+        else:
+            ident = f"笔记/{bid}"
+            title = items[0].get("title") or items[0].get("name") or bid
+        lines.append(f"{shown}. [{kind}] {title}  身份：{ident}")
+        why = [
+            p
+            for p in (items[0].get("why") or [])
+            if p and p not in ident and len(p) <= 20
+        ]
+        if why:
+            lines.append(f"   像在：含「{'、'.join(str(x) for x in why[:4])}」")
+        else:
+            lines.append("   像在：正文")
+        lines.append(f"   命中 {len(items)} 块")
+        lines.append(f"   建议块（最多 {CHAPTER_SUGGEST_LIMIT} 个）：")
+        for it in items[:CHAPTER_SUGGEST_LIMIT]:
+            lines.append(f"   · {it['ident']}")
+    out = "\n".join(lines) + "\n"
+    log_call("kb_search", True, hits=min(shown, SEARCH_LIMIT), query=q)
+    return out
+
+
+def _header_search(q: str) -> str:
     tokens = _tokens(q)
     ranked: list[tuple[float, dict, list[str], list[str]]] = []
     for item in iter_headers():
@@ -119,10 +171,8 @@ def search(query: str) -> str:
     ranked.sort(key=lambda r: r[0], reverse=True)
     top = ranked[:SEARCH_LIMIT]
     if not top:
-        out = "路标：没有像的。抬头扫过了，没有贴近这个问法的。不要装查过。\n"
-        log_call("kb_search", True, hits=0, query=q)
-        return out
-    lines = [f"路标（最多 {SEARCH_LIMIT} 条，无正文）"]
+        return "路标：没有像的。抬头扫过了，没有贴近这个问法的。不要装查过。\n"
+    lines = [f"路标（最多 {SEARCH_LIMIT} 条，无正文；索引不可用，已退化成抬头）"]
     for i, (_s, item, why, hits) in enumerate(top, 1):
         lines.append(f"{i}. [{item['kind']}] {item['title'] or item['ident']}  身份：{item['ident']}")
         lines.append(f"   像在：{'；'.join(why)}")
@@ -132,9 +182,18 @@ def search(query: str) -> str:
                 lines.append(f"   · {item['ident']}/{c}")
         elif item["kind"] == "书":
             lines.append(f"   没有命中章（可点 {item['ident']}/导读）")
-    out = "\n".join(lines) + "\n"
-    log_call("kb_search", True, hits=len(top), query=q)
-    return out
+    return "\n".join(lines) + "\n"
+
+
+def _book_title(slug: str) -> str:
+    p = dirs()["books"] / slug / "导读.md"
+    if not p.is_file():
+        return slug
+    try:
+        meta, _ = split_frontmatter(p.read_text(encoding="utf-8"))
+        return str(meta.get("title") or slug)
+    except OSError:
+        return slug
 
 
 def _parse_target(target: str) -> tuple[str | None, str | None, str | None]:
@@ -153,8 +212,35 @@ def _parse_target(target: str) -> tuple[str | None, str | None, str | None]:
 def _cap(text: str) -> str:
     if len(text) <= CHAR_CAP:
         return text
-    tail = chr(10) + chr(10) + '[' + '已截断：这一块最多 {n} 字，只给了开头。同一块再读还是这段开头，不能续页。要更多请换问法再检索，或点另一章。够答就停。'.format(n=CHAR_CAP) + ']' + chr(10)
-    return text[:CHAR_CAP] + tail
+    return text[:CHAR_CAP]
+
+
+def _split_part(part: str) -> tuple[str, int]:
+    m = re.match(r"^(.*)#(\d+)$", part or "")
+    if m:
+        return m.group(1), max(1, int(m.group(2)))
+    return part or "", 1
+
+
+def _win_ident(slug: str, name: str, win: int) -> str:
+    if win <= 1:
+        return f"书/{slug}/{name}"
+    return f"书/{slug}/{name}#{win}"
+
+
+def _neighbors(files: list[Path], idx: int, slug: str, name: str, win: int, nwin: int) -> str:
+    bits: list[str] = []
+    if win > 1:
+        bits.append(f"上一窗 {_win_ident(slug, name, win - 1)}")
+    if win < nwin:
+        bits.append(f"下一窗 {_win_ident(slug, name, win + 1)}")
+    if idx > 0:
+        bits.append(f"上一块 书/{slug}/{_block_name(files[idx - 1])}")
+    if idx + 1 < len(files):
+        bits.append(f"下一块 书/{slug}/{_block_name(files[idx + 1])}")
+    if not bits:
+        return ""
+    return "邻块：" + " ｜ ".join(bits) + "\n"
 
 
 def _read_book(slug: str, part: str | None) -> str:
@@ -173,20 +259,31 @@ def _read_book(slug: str, part: str | None) -> str:
             "无",
             "例如 part=导读 或 part=第一章。",
         )
-    if part in ("导读", "导读.md"):
+    name, win = _split_part(part)
+    if name in ("导读", "导读.md"):
         p = book / "导读.md"
         if not p.is_file():
             return fail("阅读-点名", "这份书没有导读。", "无", "换一块或先入库。")
-        return _cap(p.read_text(encoding="utf-8"))
+        text = p.read_text(encoding="utf-8")
+        nwin = max(1, (len(text) + CHAR_CAP - 1) // CHAR_CAP)
+        chunk = _cap(text[(win - 1) * CHAR_CAP : win * CHAR_CAP])
+        nb = _neighbors([], 0, slug, "导读", win, nwin)
+        return chunk + (("\n" + nb) if nb else "")
     files = [p for p in sorted(book.glob("*.md")) if p.name != "导读.md"]
-    for p in files:
+    for i, p in enumerate(files):
         text = p.read_text(encoding="utf-8")
         first = text.splitlines()[0] if text else ""
-        if part in p.name or part in p.stem or part in first:
-            return _cap(text)
+        bname = _block_name(p)
+        if name in p.name or name in p.stem or name in first or name == bname:
+            nwin = max(1, (len(text) + CHAR_CAP - 1) // CHAR_CAP)
+            if win > nwin:
+                win = nwin
+            chunk = _cap(text[(win - 1) * CHAR_CAP : win * CHAR_CAP])
+            nb = _neighbors(files, i, slug, bname, win, nwin)
+            return chunk + (("\n" + nb) if nb else "")
     return fail(
         "阅读-点名",
-        f"在 {slug} 里找不到「{part}」这一块。",
+        f"在 {slug} 里找不到「{name}」这一块。",
         "无",
         "对照路标或导读里的章节名再点一次。",
     )
@@ -219,7 +316,13 @@ def _read_note(slug: str) -> str:
             "无",
             "先检索拿身份，再点名 笔记/<slug>。",
         )
-    return _cap(p.read_text(encoding="utf-8"))
+    text = p.read_text(encoding="utf-8")
+    nwin = max(1, (len(text) + CHAR_CAP - 1) // CHAR_CAP)
+    chunk = _cap(text[:CHAR_CAP])
+    extra = ""
+    if nwin > 1:
+        extra = f"\n邻块：下一窗 笔记/{slug}#2\n"
+    return chunk + extra
 
 
 def _why_of(out: str) -> str:

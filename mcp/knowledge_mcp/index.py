@@ -10,7 +10,7 @@ from knowledge_mcp.paths import dirs
 HAN = re.compile(r"[\u4e00-\u9fff]+")
 ASCII = re.compile(r"[A-Za-z0-9_]+")
 FUN_WORDS = ("什么", "怎么", "如何", "这个", "一个", "我们", "自己")
-FUN_CHARS = set("的了是和与及或在有被把让就都也还很到从对为")
+FUN_CHARS = set("的了是和与及或在有被把让就都也还很到从对")
 NAV_MARKS = ("目录", "目 录", "索引", "参考文献", "术语表")
 
 _con: sqlite3.Connection | None = None
@@ -42,7 +42,12 @@ def parse_query(q: str) -> list[str]:
         if not token:
             return
         for w in FUN_WORDS:
-            token = token.replace(w, " ")
+            if w == "什么" and "为什么" in token:
+                token = token.replace("为什么", "\0")
+                token = token.replace("什么", " ")
+                token = token.replace("\0", "为什么")
+            else:
+                token = token.replace(w, " ")
         for bit in token.split():
             if bit in FUN_WORDS or all(c in FUN_CHARS for c in bit):
                 continue
@@ -111,7 +116,7 @@ def _ensure() -> sqlite3.Connection:
     con = sqlite3.connect(":memory:")
     con.execute(
         "CREATE VIRTUAL TABLE docs USING fts5("
-        "ident UNINDEXED, book_id UNINDEXED, kind UNINDEXED, "
+        "ident UNINDEXED, book_id UNINDEXED, kind UNINDEXED, label UNINDEXED, "
         "title, name, body)"
     )
     books = dirs()["books"]
@@ -137,11 +142,12 @@ def _ensure() -> sqlite3.Connection:
                 body = "" if is_nav_name(p.name) else raw
                 ident = f"书/{slug}/{name}"
                 con.execute(
-                    "INSERT INTO docs VALUES (?,?,?,?,?,?)",
+                    "INSERT INTO docs VALUES (?,?,?,?,?,?,?)",
                     (
                         ident,
                         slug,
                         "书",
+                        name,
                         tokenize_index(title),
                         tokenize_index(name),
                         tokenize_index(body),
@@ -158,11 +164,12 @@ def _ensure() -> sqlite3.Connection:
             tm = re.search(r"^title:\s*(.+)$", raw, re.M)
             note_title = tm.group(1).strip().strip("\"'") if tm else p.stem
             con.execute(
-                "INSERT INTO docs VALUES (?,?,?,?,?,?)",
+                "INSERT INTO docs VALUES (?,?,?,?,?,?,?)",
                 (
                     ident,
                     p.stem,
                     "笔记",
+                    note_title,
                     tokenize_index(note_title),
                     tokenize_index(note_title),
                     tokenize_index(raw),
@@ -195,13 +202,16 @@ def search_index(q: str) -> list[dict]:
         dfs = [(p, _df(con, p)) for p in real]
         if any(d == 0 for _, d in dfs):
             return []
-        rarest = min(dfs, key=lambda x: (x[1], -len(x[0])))[0]
-        gate = _fts_piece(rarest)
+        long = [p for p, d in dfs if d > 0 and (len(p) >= 4 or re.fullmatch(r"[A-Za-z0-9_]{3,}", p))]
+        if long:
+            gate = " OR ".join(_fts_piece(p) for p in long)
+        else:
+            gate = expr
     else:
         gate = expr
     try:
         rows = con.execute(
-            "SELECT ident, book_id, kind, name, bm25(docs) FROM docs "
+            "SELECT ident, book_id, kind, label, bm25(docs) FROM docs "
             "WHERE docs MATCH ? AND docs MATCH ? ORDER BY bm25(docs)",
             (expr, gate),
         ).fetchall()
@@ -209,18 +219,18 @@ def search_index(q: str) -> list[dict]:
         return []
     out: list[dict] = []
     seen: set[str] = set()
-    for ident, book_id, kind, name, score in rows:
+    for ident, book_id, kind, label, score in rows:
         if ident in seen:
             continue
         seen.add(ident)
-        why = [p for p in parts if p in ident or True][:3]
+        why = [p for p in parts if p and (p in ident or p in (label or ""))][:3]
         out.append(
             {
                 "ident": ident,
                 "book_id": book_id,
                 "kind": kind,
-                "title": ident,
-                "name": ident.rsplit("/", 1)[-1],
+                "title": label or ident,
+                "name": label or ident.rsplit("/", 1)[-1],
                 "score": score,
                 "why": why,
             }

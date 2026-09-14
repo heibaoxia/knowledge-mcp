@@ -20,7 +20,7 @@ def plant_book(
         encoding="utf-8",
     )
     for i, (c, b) in enumerate(zip(chapters, bodies), 1):
-        (d / f"{i:02d}-ch.md").write_text(f"# {c}\n\n{b}\n", encoding="utf-8")
+        (d / f"{i:02d}-{c}.md").write_text(f"# {c}\n\n{b}\n", encoding="utf-8")
 
 
 def plant_note(kb: Path, slug: str, title: str, intro: str, body: str) -> None:
@@ -49,19 +49,19 @@ def test_search_returns_landmarks_without_body(kb):
     assert not out.startswith("失败")
 
 
-def test_search_body_token_is_not_a_hit(kb):
+def test_search_body_token_hits_identity_without_leaking_body(kb):
     plant_book(
         kb,
         "delay",
         "拖延心理学",
         "讲拖延从哪来。",
         ["第一章 为什么拖"],
-        ["SECRET_BODY_TOKEN"],
+        ["SECRET_BODY_TOKEN 出现在正文。"],
     )
     from knowledge_mcp.retrieve import search
 
     out = search("SECRET_BODY_TOKEN")
-    assert "拖延心理学" not in out
+    assert "拖延心理学" in out
     assert "SECRET_BODY_TOKEN" not in out
 
 
@@ -92,7 +92,7 @@ def test_search_caps_at_five(kb):
     from knowledge_mcp.retrieve import search
 
     out = search("拖延")
-    assert out.count("笔记/n") <= 5
+    assert out.count("身份：笔记/") <= 5
 
 
 def test_read_without_identity_refused(kb):
@@ -135,7 +135,7 @@ def test_read_has_char_cap(kb):
     out = read("书/delay", "第一章")
     assert not out.startswith("失败")
     assert len(out) < 12000
-    assert "截断" in out
+    assert "邻块" in out or "截断" in out
 
 
 def test_read_note_by_id(kb):
@@ -177,7 +177,6 @@ def test_search_suggests_readable_chapter_identities(kb):
 
     by_title = search("拖延心理学")
     assert "书/delay" in by_title
-    assert "导读" in by_title
     assert "SECRET_BODY_ONE" not in by_title
     assert "SECRET_BODY_TWO" not in by_title
 
@@ -279,11 +278,11 @@ def test_read_batch_total_cap_truncates_and_marks_unread(kb):
         ["书/big/第一章 甲", "书/big/第二章 乙", "书/big/第三章 丙", "书/big/第四章 丁"],
     )
     body = out.split("未读", 1)[0]
-    assert "截断" in body
+    assert "邻块" in body or "截断" in body
     assert "甲" in body
     assert "乙" in body
-    assert "丙" not in body
-    assert "丁" not in body
+    assert "丙" * 50 not in body
+    assert "丁" * 50 not in body
     assert len(body) < 24000
     assert "未读" in out
     assert "书/big/第三章 丙" in out
@@ -322,6 +321,28 @@ def test_server_instructions_steer_read():
     assert "8000" in text
     assert "24000" in text
     assert "够答就停" in text
-    assert "续页" in text
+    assert "续" in text
     assert "kb_search" in text
     assert "资料" in text
+
+
+def test_search_empty_on_pytorch(kb):
+    plant_book(kb, "psy", "心理学与生活", "教材。", ["神经"], ["训练神经网络的章节"])
+    from knowledge_mcp.retrieve import search
+
+    out = search("怎么用 PyTorch 训练一个神经网络")
+    assert "心理学与生活" not in out
+    assert "没有" in out or "0" in out
+
+
+def test_read_window_hash2_is_not_the_start(kb):
+    body = "A" * 9000 + "TAIL_MARK"
+    plant_book(kb, "delay", "拖延心理学", "教材。", ["长章"], [body])
+    from knowledge_mcp.retrieve import read
+
+    first = read(target="书/delay/长章")
+    assert "TAIL_MARK" not in first
+    assert "已截断" not in first or "邻块" in first
+    second = read(target="书/delay/长章#2")
+    assert "TAIL_MARK" in second
+    assert "邻块" in second

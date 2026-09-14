@@ -226,6 +226,54 @@ def test_conservation_over_99_percent():
     assert got >= int(len(text) * 0.99)
 
 
+def test_h3_article_keeps_h4_sections():
+    from knowledge_mcp.ingest import split_markdown
+
+    text = (
+        "# 第一卷\n\n"
+        "### 矛盾论\n\n引言。\n\n"
+        "#### 一　两种宇宙观\n\n甲。\n\n"
+        "#### 二　矛盾的普遍性\n\n乙。\n"
+    )
+    _, _, parts = split_markdown(text, "毛选")
+    names = [n for n, _ in parts]
+    assert names == ["矛盾论"]
+    assert "两种宇宙观" in parts[0][1]
+    assert "矛盾的普遍性" in parts[0][1]
+
+
+def test_period_heading_joins_following_article():
+    from knowledge_mcp.ingest import split_markdown
+
+    text = (
+        "# 第一卷\n\n"
+        "### 出版说明\n\n说明正文。\n\n"
+        "## 第一次国内革命战争时期\n\n"
+        "### 中国社会各阶级的分析\n\n分析正文。\n"
+    )
+    _, _, parts = split_markdown(text, "毛选")
+    names = [n for n, _ in parts]
+    assert names == ["出版说明", "中国社会各阶级的分析"]
+    assert "第一次国内革命战争时期" in parts[1][1]
+    assert "第一次国内革命战争时期" not in parts[0][1]
+
+
+def test_chapter_h1_not_sunk_to_h3():
+    from knowledge_mcp.ingest import split_markdown
+
+    text = (
+        "# 7 记忆\n\n章引言。\n\n"
+        "## 什么是记忆\n\n"
+        "### 短时记忆\n\n短时记忆正文。\n\n"
+        "# 8 认知\n\n另一章。\n"
+    )
+    _, _, parts = split_markdown(text, "书")
+    names = [n for n, _ in parts]
+    assert len(parts) == 2
+    assert "短时记忆" not in names
+    assert "记忆" in names[0]
+
+
 def test_guide_comes_from_headings_not_llm(kb, monkeypatch):
     md = fake_markdown("矛盾论")
     _patch_convert(monkeypatch, md)
