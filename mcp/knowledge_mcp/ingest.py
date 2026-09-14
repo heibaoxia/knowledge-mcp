@@ -450,8 +450,9 @@ def convert_one(src: Path) -> dict:
         (book_dir / "正文.md").write_text(parts[0][1], encoding="utf-8")
         names = [parts[0][0]]
     else:
+        width = max(2, len(str(len(parts))))
         for i, (name, body) in enumerate(parts, 1):
-            fn = f"{i:02d}-{safe_filename(name) or f'第{i}章'}.md"
+            fn = f"{i:0{width}d}-{safe_filename(name) or f'第{i}章'}.md"
             (book_dir / fn).write_text(body, encoding="utf-8")
             names.append(name)
     intro = first_intro(parts, len(names), title)

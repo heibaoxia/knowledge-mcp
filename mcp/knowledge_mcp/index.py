@@ -211,8 +211,8 @@ def search_index(q: str) -> list[dict]:
         gate = expr
     try:
         rows = con.execute(
-            "SELECT ident, book_id, kind, label, bm25(docs) FROM docs "
-            "WHERE docs MATCH ? AND docs MATCH ? ORDER BY bm25(docs)",
+            "SELECT ident, book_id, kind, label, bm25(docs, 3.0, 3.0, 1.0) FROM docs "
+            "WHERE docs MATCH ? AND docs MATCH ? ORDER BY bm25(docs, 3.0, 3.0, 1.0)",
             (expr, gate),
         ).fetchall()
     except sqlite3.OperationalError:

@@ -92,6 +92,24 @@ def test_pytorch_is_empty_even_with_train_noise(kb):
     assert hits == []
 
 
+def test_named_article_ranks_above_body_mentions(kb):
+    _plant_book(
+        kb,
+        "mao",
+        "毛泽东选集",
+        {
+            "21-矛盾论.md": "# 矛盾论\n\n矛盾论正文。\n",
+            "30-五四运动.md": "# 五四运动\n\n文中提到矛盾论。\n",
+        },
+    )
+    from knowledge_mcp.index import invalidate, search_index
+
+    invalidate()
+    hits = search_index("矛盾论")
+    names = [h["name"] for h in hits]
+    assert names[0] == "矛盾论"
+
+
 def test_nav_body_not_indexed(kb):
     _plant_book(
         kb,

@@ -269,7 +269,11 @@ def _read_book(slug: str, part: str | None) -> str:
         chunk = _cap(text[(win - 1) * CHAR_CAP : win * CHAR_CAP])
         nb = _neighbors([], 0, slug, "导读", win, nwin)
         return chunk + (("\n" + nb) if nb else "")
-    files = [p for p in sorted(book.glob("*.md")) if p.name != "导读.md"]
+    def _file_key(p: Path) -> tuple[int, str]:
+        m = re.match(r"^(\d+)", p.name)
+        return (int(m.group(1)) if m else 10**9, p.name)
+
+    files = [p for p in sorted(book.glob("*.md"), key=_file_key) if p.name != "导读.md"]
     for i, p in enumerate(files):
         text = p.read_text(encoding="utf-8")
         first = text.splitlines()[0] if text else ""
