@@ -235,4 +235,10 @@ def search_index(q: str) -> list[dict]:
                 "why": why,
             }
         )
+    out.sort(
+        key=lambda h: (
+            0 if any(p in (h.get("name") or "") for p in parts if len(p) >= 2) else 1,
+            h["score"],
+        )
+    )
     return out
