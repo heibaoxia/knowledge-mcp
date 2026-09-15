@@ -178,7 +178,9 @@ def ident_exists(ident: str) -> bool:
     t = (ident or "").replace("\\", "/").strip().strip("/")
     if t.startswith("资料/"):
         t = t[len("资料/") :]
+    t = re.sub(r"@\d+$", "", t)
     t = re.sub(r"#\d+$", "", t)
+    t = re.sub(r"#[^/]+$", "", t)
     if t.startswith("笔记/"):
         slug = Path(t[3:]).stem
         return bool(slug) and (dirs()["notes"] / f"{slug}.md").is_file()

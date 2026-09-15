@@ -13,6 +13,7 @@ from knowledge_mcp.index import (
     MAP_FILE,
     SKIP_FILES,
     _block_name,
+    is_nav_name,
     _df,
     _ensure,
     _fts_piece,
@@ -542,11 +543,18 @@ def _cap(text: str) -> str:
     return text[:CHAR_CAP]
 
 
-def _split_part(part: str) -> tuple[str, int]:
-    m = re.match(r"^(.*)#(\d+)$", part or "")
+def _split_part(part: str) -> tuple[str, int, str | None, int | None]:
+    s = part or ""
+    m = re.match(r"^(.*)@(\d+)$", s)
     if m:
-        return m.group(1), max(1, int(m.group(2)))
-    return part or "", 1
+        return m.group(1), 1, None, int(m.group(2))
+    m = re.match(r"^(.*)#(\d+)$", s)
+    if m:
+        return m.group(1), max(1, int(m.group(2))), None, None
+    m = re.match(r"^(.*)#([^#]+)$", s)
+    if m:
+        return m.group(1), 1, m.group(2).strip(), None
+    return s, 1, None, None
 
 
 def _win_ident(slug: str, name: str, win: int) -> str:
@@ -555,18 +563,49 @@ def _win_ident(slug: str, name: str, win: int) -> str:
     return f"书/{slug}/{name}#{win}"
 
 
-def _neighbors(files: list[Path], idx: int, slug: str, name: str, win: int, nwin: int) -> str:
+def _section_list(text: str) -> list[tuple[str, int]]:
+    out: list[tuple[str, int]] = []
+    for m in re.finditer(r"^(#{1,6})\s+(.+?)\s*$", text, re.M):
+        title = re.sub(r"\s+#+\s*$", "", m.group(2)).strip()
+        if title:
+            out.append((title, m.start()))
+    return out
+
+
+def _section_tail(text: str, path: Path | None = None) -> str:
     bits: list[str] = []
-    if win > 1:
-        bits.append(f"上一窗 {_win_ident(slug, name, win - 1)}")
-    if win < nwin:
-        bits.append(f"下一窗 {_win_ident(slug, name, win + 1)}")
+    if path is not None and is_nav_name(path.name):
+        bits.append("不必读")
+    secs = _section_list(text)
+    if secs:
+        bits.append("节：" + " ｜ ".join(f"{t} @{off}" for t, off in secs[:24]))
+    return ("\n" + "\n".join(bits) + "\n") if bits else ""
+
+
+def _neighbors(
+    files: list[Path],
+    idx: int,
+    slug: str,
+    name: str,
+    win: int,
+    nwin: int,
+    start_off: int | None = None,
+) -> str:
+    bits: list[str] = [f"本窗 {win}/{nwin}"]
+    if start_off is not None:
+        if start_off > 0:
+            bits.append(f"上一窗 书/{slug}/{name}@{max(0, start_off - CHAR_CAP)}")
+        if win < nwin:
+            bits.append(f"下一窗 书/{slug}/{name}@{start_off + CHAR_CAP}")
+    else:
+        if win > 1:
+            bits.append(f"上一窗 {_win_ident(slug, name, win - 1)}")
+        if win < nwin:
+            bits.append(f"下一窗 {_win_ident(slug, name, win + 1)}")
     if idx > 0:
         bits.append(f"上一块 书/{slug}/{_block_name(files[idx - 1])}")
     if idx + 1 < len(files):
         bits.append(f"下一块 书/{slug}/{_block_name(files[idx + 1])}")
-    if not bits:
-        return ""
     return "邻块：" + " ｜ ".join(bits) + "\n"
 
 
@@ -586,7 +625,7 @@ def _read_book(slug: str, part: str | None) -> str:
             "无",
             "例如 part=导读 或 part=第一章。",
         )
-    name, win = _split_part(part)
+    name, win, section, off = _split_part(part)
     special = "导读" if name in ("导读", "导读.md") else ("地图" if name in ("地图", "地图.md") else None)
     if special:
         p = book / f"{special}.md"
@@ -607,12 +646,31 @@ def _read_book(slug: str, part: str | None) -> str:
         first = text.splitlines()[0] if text else ""
         bname = _block_name(p)
         if name in p.name or name in p.stem or name in first or name == bname:
+            start = 0
+            if off is not None:
+                start = max(0, min(off, len(text)))
+            elif section:
+                found = next((s_off for s_title, s_off in _section_list(text) if s_title == section), None)
+                if found is None:
+                    return fail(
+                        "阅读-点名",
+                        f"在 {slug} 里找不到「{section}」这一节。",
+                        "无",
+                        "对照该块节目录上的标题再点一次。",
+                    )
+                start = found
+            if start:
+                remain = text[start:]
+                nwin = max(1, (len(remain) + CHAR_CAP - 1) // CHAR_CAP)
+                chunk = _cap(remain)
+                nb = _neighbors(files, i, slug, bname, 1, nwin, start_off=start)
+                return chunk + (("\n" + nb) if nb else "") + _section_tail(text, p)
             nwin = max(1, (len(text) + CHAR_CAP - 1) // CHAR_CAP)
             if win > nwin:
                 win = nwin
             chunk = _cap(text[(win - 1) * CHAR_CAP : win * CHAR_CAP])
             nb = _neighbors(files, i, slug, bname, win, nwin)
-            return chunk + (("\n" + nb) if nb else "")
+            return chunk + (("\n" + nb) if nb else "") + _section_tail(text, p)
     return fail(
         "阅读-点名",
         f"在 {slug} 里找不到「{name}」这一块。",

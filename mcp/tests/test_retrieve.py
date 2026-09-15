@@ -335,6 +335,32 @@ def test_search_empty_on_pytorch(kb):
     assert "没有" in out or "0" in out
 
 
+def test_read_section_by_name(kb):
+    body = "# 7 记忆\n\n前言若干。\n\n## 短时记忆\n\nSECTION_MARK 短时记忆正文。\n\n## 长时记忆\n\n长时。\n"
+    plant_book(kb, "psy", "心理学与生活", "教材。", ["7 记忆"], [body])
+    from knowledge_mcp.retrieve import read
+
+    out = read(target="书/psy/7 记忆#短时记忆")
+    assert "SECTION_MARK" in out
+    assert not out.startswith("失败")
+
+
+def test_read_section_missing_fails_that_item(kb):
+    plant_book(kb, "psy", "心理学与生活", "教材。", ["7 记忆"], ["# 7 记忆\n\n无小节。\n"])
+    from knowledge_mcp.retrieve import read
+
+    out = read(target="书/psy/7 记忆#不存在的节")
+    assert out.startswith("失败") or "找不到" in out
+
+
+def test_read_reports_window_index(kb):
+    plant_book(kb, "delay", "拖延", "教材。", ["长章"], ["A" * 9000 + "TAIL"])
+    from knowledge_mcp.retrieve import read
+
+    out = read(target="书/delay/长章")
+    assert "1/" in out and "窗" in out
+
+
 def test_read_window_hash2_is_not_the_start(kb):
     body = "A" * 9000 + "TAIL_MARK"
     plant_book(kb, "delay", "拖延心理学", "教材。", ["长章"], [body])
