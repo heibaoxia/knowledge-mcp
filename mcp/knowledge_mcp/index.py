@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import threading
 from pathlib import Path
 
 import yaml
@@ -20,6 +21,7 @@ IDENT_IN_LINE = re.compile(r"(?:书|笔记)/\S.*")
 
 _con: sqlite3.Connection | None = None
 _root: str | None = None
+_lock = threading.RLock()
 
 
 def tokenize_index(text: str) -> str:
@@ -106,10 +108,11 @@ def _real_pieces(parts: list[str]) -> list[str]:
 
 def invalidate() -> None:
     global _con, _root
-    if _con is not None:
-        _con.close()
-        _con = None
-    _root = None
+    with _lock:
+        if _con is not None:
+            _con.close()
+            _con = None
+        _root = None
 
 
 def _block_name(path: Path) -> str:
@@ -278,12 +281,13 @@ def map_index_text(text: str) -> str:
 
 def _ensure() -> sqlite3.Connection:
     global _con, _root
-    root = str(dirs()["root"])
-    if _con is not None and _root != root:
-        invalidate()
-    if _con is not None:
-        return _con
-    con = sqlite3.connect(":memory:")
+    with _lock:
+        root = str(dirs()["root"])
+        if _con is not None and _root != root:
+            invalidate()
+        if _con is not None:
+            return _con
+        con = sqlite3.connect(":memory:", check_same_thread=False)
     con.execute(
         "CREATE VIRTUAL TABLE docs USING fts5("
         "ident UNINDEXED, book_id UNINDEXED, kind UNINDEXED, label UNINDEXED, "
@@ -374,19 +378,20 @@ def _ensure() -> sqlite3.Connection:
 
 def _df(con: sqlite3.Connection, piece: str, kind: str | None = None) -> int:
     expr = _fts_piece(piece)
-    try:
-        if kind:
-            row = con.execute(
-                "SELECT count(*) FROM docs WHERE kind = ? AND docs MATCH ?",
-                (kind, expr),
-            ).fetchone()
-        else:
-            row = con.execute(
-                "SELECT count(*) FROM docs WHERE docs MATCH ?", (expr,)
-            ).fetchone()
-        return int(row[0] if row else 0)
-    except sqlite3.OperationalError:
-        return 0
+    with _lock:
+        try:
+            if kind:
+                row = con.execute(
+                    "SELECT count(*) FROM docs WHERE kind = ? AND docs MATCH ?",
+                    (kind, expr),
+                ).fetchone()
+            else:
+                row = con.execute(
+                    "SELECT count(*) FROM docs WHERE docs MATCH ?", (expr,)
+                ).fetchone()
+            return int(row[0] if row else 0)
+        except sqlite3.OperationalError:
+            return 0
 
 
 def _match_gate(
@@ -416,6 +421,11 @@ def _match_gate(
 
 
 def search_index(q: str) -> list[dict]:
+    with _lock:
+        return _search_index_locked(q)
+
+
+def _search_index_locked(q: str) -> list[dict]:
     con = _ensure()
     gated = _match_gate(con, q)
     if not gated:
@@ -481,15 +491,21 @@ def _guide_title(slug: str) -> str:
 
 def latin_blocked(q: str) -> bool:
     parts = parse_query(q)
-    con = _ensure()
-    return any(
-        re.fullmatch(r"[A-Za-z0-9_]+", p) and _df(con, p) == 0 for p in parts
-    )
+    with _lock:
+        con = _ensure()
+        return any(
+            re.fullmatch(r"[A-Za-z0-9_]+", p) and _df(con, p) == 0 for p in parts
+        )
 
 
 def search_maps(q: str) -> list[dict]:
     if latin_blocked(q):
         return []
+    with _lock:
+        return _search_maps_locked(q)
+
+
+def _search_maps_locked(q: str) -> list[dict]:
     con = _ensure()
     gated = _match_gate(con, q, "地图")
     if not gated:

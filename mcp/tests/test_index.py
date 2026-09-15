@@ -15,6 +15,32 @@ def _plant_book(kb: Path, slug: str, title: str, files: dict[str, str]) -> None:
         (d / name).write_text(body, encoding="utf-8")
 
 
+def test_search_from_two_threads(kb):
+    import threading
+
+    _plant_book(kb, "delay", "拖延心理学", {"01-第一章.md": "# 第一章\n\n拖延正文。\n"})
+    from knowledge_mcp.index import invalidate, search_index
+
+    invalidate()
+    search_index("拖延")
+    errs: list[str] = []
+
+    def go() -> None:
+        try:
+            hits = search_index("拖延")
+            if not hits:
+                errs.append("empty")
+        except Exception as e:
+            errs.append(str(e))
+
+    ts = [threading.Thread(target=go) for _ in range(4)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert errs == []
+
+
 def test_tokenize_bigrams_and_unigrams():
     from knowledge_mcp.index import tokenize_index
 
