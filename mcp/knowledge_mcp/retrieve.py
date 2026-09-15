@@ -179,8 +179,8 @@ def _life_fallback(q: str) -> list[dict]:
     return [h for _, h in scored[:1]]
 
 
-def _why_bits(items: list[dict], q: str = "") -> list[str]:
-    parts = [p for p in parse_query(q) if len(p) >= 2] if q else []
+def _why_bits(items: list[dict], q: str = "", minlen: int = 2) -> list[str]:
+    parts = [p for p in parse_query(q) if len(p) >= minlen] if q else []
     blob = " ".join((it.get("ident") or "") + (it.get("name") or "") for it in items)
     bits: list[str] = []
     for p in sorted(parts, key=len, reverse=True):
@@ -193,7 +193,7 @@ def _why_bits(items: list[dict], q: str = "") -> list[str]:
     for it in items:
         for p in it.get("why") or []:
             s = str(p)
-            if s and s not in bits and len(s) <= 20:
+            if s and s not in bits and len(s) <= 20 and len(s) >= minlen:
                 bits.append(s)
     return bits[:4]
 
@@ -243,15 +243,33 @@ def _life_literal_ok(q: str, bid: str, items: list[dict]) -> bool:
     return any(p in blob for p in longs)
 
 
-def _longs_in_corpus(q: str) -> list[str]:
-    con = _ensure()
-    out: list[str] = []
-    for p in parse_query(q):
-        if len(p) >= 3 or re.fullmatch(r"[A-Za-z0-9_]{3,}", p):
-            if _df(con, p) > 0:
-                out.append(p)
-    return out
+def _long_pieces(q: str) -> list[str]:
+    """问句里 len≥3 的原片（ASCII 同长也算）。这类片才是「沾的到底是不是这条」。"""
+    return [p for p in parse_query(q) if len(p) >= 3 or re.fullmatch(r"[A-Za-z0-9_]{3,}", p)]
 
+
+def _longest_pieces(q: str) -> list[str]:
+    """问句 len≥3 原片里最长的那一档（并列同长全算）。DF=0 也当门槛：
+    只沾了公共片（len<3）的书拿不出这条证据，就不占仅字面/仅地图的格。"""
+    parts = _long_pieces(q)
+    if not parts:
+        return []
+    top = max(len(p) for p in parts)
+    return [p for p in parts if len(p) == top]
+
+
+def _map_has_piece(bid: str, longs: list[str]) -> bool:
+    """本地图正文（能解决什么 + 建议从哪读）有没有问句的最长原片。"""
+    if not longs:
+        return True
+    p = dirs()["books"] / bid / MAP_FILE
+    if not p.is_file():
+        return False
+    try:
+        blob = map_index_text(p.read_text(encoding="utf-8"))
+    except OSError:
+        return False
+    return any(piece in blob for piece in longs)
 
 def _book_has_piece(bid: str, piece: str) -> bool:
     try:
@@ -270,14 +288,21 @@ def _best_score(items: list[dict]) -> float:
     return float(min(float(it.get("score") or 0) for it in items))
 
 
+def _has_longest(bid: str, longs: list[str]) -> bool:
+    """这本书拿不拿得出最长档里的原片。"""
+    return any(_book_has_piece(bid, p) for p in longs)
+
+
 def _drop_weak_literal(q: str, lit_only: list[str], both: list[str], lit_groups: dict) -> list[str]:
-    longs = _longs_in_corpus(q)
     keep = list(lit_only)
-    if len(longs) >= 2:
-        con = _ensure()
-        min_df = min(_df(con, p) for p in longs)
-        rare = [p for p in longs if _df(con, p) == min_df]
-        keep = [b for b in keep if any(_book_has_piece(b, p) for p in rare)]
+    longs = _longest_pieces(q)
+    cands = both + keep
+    # 一本书沾的到底是不是问句这条：它得拿得出问句自己的最长原片（DF=0 也算
+    # 门槛）。只沾了公共片（len<3）的不占名额。
+    # 最长原片谁都拿不出时（问句末尾粘出来的「讲中国社会各阶级」），这条闸
+    # 没有可问的证据，退回现成的 LIT_GAP，不许把期望书一起打掉。
+    if longs and any(_has_longest(b, longs) for b in cands):
+        keep = [b for b in keep if _has_longest(b, longs)]
     scored = both + keep
     if not scored:
         return keep
@@ -365,6 +390,14 @@ def _format_landmarks(
             map_order.append(bid)
     lit_books = [bid for kind, bid in lit_order if kind == "书"]
     notes = [(kind, bid) for kind, bid in lit_order if kind != "书"]
+    lit_set = set(lit_books)
+    longs = _longest_pieces(q)
+    map_by = {
+        bid: h
+        for bid, h in map_by.items()
+        if bid in lit_set or _map_has_piece(bid, longs)
+    }
+    map_order = [bid for bid in map_order if bid in map_by]
     both = [bid for bid in lit_books if bid in map_by]
     lit_only = [bid for bid in lit_books if bid not in map_by]
     if life:

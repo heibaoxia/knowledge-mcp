@@ -151,9 +151,12 @@ def test_search_bigram_hits_two_headers_without_spaces(kb):
     plant_book(kb, "self", "自我控制", "讲自控从哪来。", ["第一章 怎么忍"], ["正文乙"])
     from knowledge_mcp.retrieve import search
 
+    # 本轮改为「仅字面必须命中问句自己的最长原片」后，两个长片不等长时
+    # 只留最长那条：「拖延心理学」五字压过「自我控制」四字。
+    # 这条不是「无空格问句能不能命中抬头」，而是路标只认最长的那条证据。
     out = search("拖延心理学与自我控制")
     assert "拖延心理学" in out
-    assert "自我控制" in out
+    assert "书/delay" in out
     assert not out.startswith("失败")
 
 
@@ -553,6 +556,115 @@ def test_literal_only_drops_book_missing_rarest_long(kb):
     out = search("阿德勒说的自卑感和优越感是怎么来的")
     assert "自卑与超越" in out
     assert "毛泽东选集" not in out
+
+
+def test_literal_only_drops_high_df_book_missing_longest_term(kb):
+    # S1：问句有长专名「课题分离术」，也有公共片「分析」（len=2，不成长片）。
+    # 闲书只重复「分析」，命不中长专名，不许占仅字面格。
+    plant_book(
+        kb, "topic", "课题分离术入门", "讲课题分离术。",
+        ["第一章 课题分离术"], ["课题分离术讲的是分清谁的事。"],
+    )
+    plant_book(kb, "noise", "杂谈语录", "随笔。", ["第一章 闲话"], ["分析" * 200])
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("「课题分离术」和「分析」")
+    assert "课题分离术入门" in out
+    assert "杂谈语录" not in out
+
+
+def test_literal_only_drops_high_df_book_missing_df0_longest(kb):
+    # S2：问句里公共片本身也够长（「公共词」len=3），闲书只重复它、拿不出
+    # 更长的那条原片 → 不许占仅字面格。期望书正文有长专名（字面）+
+    # 地图也含长专名（地图）→ 两路都中，不受这条闸影响。
+    plant_book(
+        kb, "heavy", "成分考札记", "乡里旧账。",
+        ["第一章 阶级成分考"], ["阶级成分考讲的是公共词在乡里的用法。"],
+    )
+    _plant_map(
+        kb, "heavy", "成分考札记",
+        ["阶级成分考是怎么做的", "公共词在乡里怎么用", "编成分表的老规矩"],
+        ["外国法案怎么读"],
+        "第一章 阶级成分考",
+    )
+    plant_book(kb, "chatty", "茶桌闲话", "闲谈。", ["第一章 闲话一则"], ["公共词" * 200])
+    _plant_map(
+        kb, "chatty", "茶桌闲话",
+        ["怎么记流水账", "茶怎么泡", "闲话怎么聊"],
+        ["汇编语言"],
+        "第一章 闲话一则",
+    )
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("阶级成分考、公共词")
+    assert "成分考札记" in out
+    assert "茶桌闲话" not in out
+
+
+def test_map_column_ignores_single_char_piece(kb):
+    # S3：地图侧不许只靠 len<3 的残片入栏。
+    # parse_query("弗洛伊德怎么看") 推演（index.py parse_query 逐字走）：
+    #   全程 HAN 无标点 → buf 攒成 "弗洛伊德怎么看"；FUN_WORDS 里的「怎么」
+    #   被 replace 成空格 → "弗洛伊德 看"；两块都不是 FUN_WORDS、也不是
+    #   全由 FUN_CHARS 组成 → parts = ["弗洛伊德", "看"]。
+    #   「看」len=1 是残片，「弗洛伊德」len=4 是最长片。
+    # 现实现下闲书进不了地图栏（_match_gate 拿最长片当 gate），
+    # 本测钉的是别把它改成靠残片入栏。
+    plant_book(
+        kb, "doc", "解梦札记", "讲梦。",
+        ["第一章 梦的做法"], ["讲梦的做法，没有这些术语。"],
+    )
+    _plant_map(
+        kb, "doc", "解梦札记",
+        ["弗洛伊德解释梦的做法", "梦和记忆的关系", "睡前念头从哪来"],
+        ["量子场论"],
+        "第一章 梦的做法",
+    )
+    plant_book(kb, "glance", "街边张望", "闲看。", ["第一章 闲坐"], ["讲院子里的旧事。"])
+    _plant_map(kb, "glance", "街边张望", ["看"], ["量子场论"], "第一章 闲坐")
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("弗洛伊德怎么看")
+    assert "解梦札记" in out
+    assert "街边张望" not in out
+
+
+def test_life_query_keeps_map_only_long_piece(kb):
+    # S4：生活口吻问句没有术语，长片（意别人 / 不是讨厌我）只在期望书地图里，
+    # 正文一个口语片都没有 → 仍要能靠仅地图进路标。
+    plant_book(kb, "life", "生活的问法", "对话。", ["第一章 对话"], ["哲人对话，没有这些口语。"])
+    _plant_map(
+        kb, "life", "生活的问法",
+        ["总是在意别人是不是讨厌我该怎么办", "怕被讨厌还想做自己怎么办", "别人的事和我的事怎么分开"],
+        ["量子场论"],
+        "第一章 对话",
+    )
+    plant_book(kb, "aside", "旁枝别记", "杂事。", ["第一章 杂事"], ["讲些杂事。"])
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("我总是很在意别人是不是讨厌我，该怎么办")
+    assert "生活的问法" in out
+    assert "仅地图" in out or "两路都中" in out
+
+
+def test_literal_only_keeps_book_with_single_long_piece(kb):
+    # S5：问句只有一条长片时，正文含它的书必须留在仅字面（最长片门槛不许误伤）。
+    plant_book(kb, "memo", "记忆札记", "讲义。", ["第一章 早期经验"], ["早期记忆影响人格。"])
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("早期记忆")
+    assert "记忆札记" in out
+    assert "仅字面" in out
 
 
 def test_single_term_literal_still_lands(kb):
