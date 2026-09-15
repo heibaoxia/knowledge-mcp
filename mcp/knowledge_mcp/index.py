@@ -39,9 +39,13 @@ def parse_query(q: str) -> list[str]:
     parts: list[str] = []
     buf: list[str] = []
 
-    def flush() -> None:
+    def flush(drop_tail: bool = False) -> None:
         if not buf:
             return
+        # 「矛盾论讲了什么」：了把动词甩在词尾（矛盾论讲）。只认「了」，
+        # 不按字面杀「讲」——否则「如何克服演讲」会被啃成「克服演」。
+        if drop_tail and len(buf) >= 3:
+            buf.pop()
         token = "".join(buf)
         buf.clear()
         if not token:
@@ -56,8 +60,6 @@ def parse_query(q: str) -> list[str]:
         for bit in token.split():
             if bit in FUN_WORDS or all(c in FUN_CHARS for c in bit):
                 continue
-            if len(bit) >= 4 and bit.endswith("讲"):
-                bit = bit[:-1]
             if bit:
                 parts.append(bit)
 
@@ -66,7 +68,7 @@ def parse_query(q: str) -> list[str]:
             nxt = s[i + 1] if i + 1 < len(s) else ""
             one_each = len(buf) == 1 and "\u4e00" <= nxt <= "\u9fff" and nxt not in FUN_CHARS
             if ch in FUN_CHARS and not one_each:
-                flush()
+                flush(ch == "了")
             else:
                 buf.append(ch)
         elif ch.isalnum() or ch == "_":
