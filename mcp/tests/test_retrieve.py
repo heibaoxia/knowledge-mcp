@@ -504,6 +504,18 @@ def test_life_query_keeps_mao_out_even_if_body_has_grams(kb):
     assert "毛泽东选集" not in out
 
 
+def test_search_three_schools_does_not_drag_mao(kb):
+    plant_book(kb, "mao", "毛泽东选集", "著作。", ["讲话"], ["放了三大炮。" + "啊" * 200 + "随大流。"])
+    plant_book(kb, "psy", "心理学与生活", "教材。", ["1 生活中的心理学"], ["心理学三大流派行为主义精神分析。"])
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("心理学三大流派有什么区别")
+    assert "毛泽东选集" not in out
+    assert "心理学与生活" in out
+
+
 def test_life_fallback_still_returns_map(kb):
     plant_book(kb, "courage", "被讨厌的勇气", "介绍。", ["第四夜"], ["完全不相干的哲人对话。"])
     _plant_map(

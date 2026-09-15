@@ -142,6 +142,33 @@ def test_nav_body_not_indexed(kb):
     assert all("目" not in n and "录" not in n for n in names)
 
 
+def test_parse_query_keeps_mudilun():
+    from knowledge_mcp.index import parse_query
+
+    assert parse_query("目的论") == ["目的论"]
+
+
+def test_trigram_window_does_not_match_far_bigrams(kb):
+    _plant_book(
+        kb, "mao", "毛泽东选集",
+        {"02-讲话.md": "# 讲话\n\n放了三大炮，公社炼钢。" + ("啊" * 200) + "百分之四十随大流。\n"},
+    )
+    from knowledge_mcp.index import invalidate, search_index
+
+    invalidate()
+    hits = search_index("心理学三大流派")
+    assert not any(h["book_id"] == "mao" for h in hits)
+
+
+def test_purpose_theory_hits_host_book(kb):
+    _plant_book(kb, "courage", "被讨厌的勇气", {"04-第四夜.md": "# 第四夜\n\n阿德勒的目的论与课题分离。\n"})
+    from knowledge_mcp.index import invalidate, search_index
+
+    invalidate()
+    hits = search_index("目的论")
+    assert any(h["book_id"] == "courage" for h in hits)
+
+
 def _guide(kb: Path, slug: str, title: str, chapters: list[str]) -> Path:
     d = kb / "资料" / "书" / slug
     d.mkdir(parents=True)

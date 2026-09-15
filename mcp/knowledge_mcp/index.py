@@ -56,11 +56,16 @@ def parse_query(q: str) -> list[str]:
         for bit in token.split():
             if bit in FUN_WORDS or all(c in FUN_CHARS for c in bit):
                 continue
-            parts.append(bit)
+            if len(bit) >= 4 and bit.endswith("讲"):
+                bit = bit[:-1]
+            if bit:
+                parts.append(bit)
 
-    for ch in s:
+    for i, ch in enumerate(s):
         if "\u4e00" <= ch <= "\u9fff":
-            if ch in FUN_CHARS:
+            nxt = s[i + 1] if i + 1 < len(s) else ""
+            one_each = len(buf) == 1 and "\u4e00" <= nxt <= "\u9fff" and nxt not in FUN_CHARS
+            if ch in FUN_CHARS and not one_each:
                 flush()
             else:
                 buf.append(ch)
@@ -82,28 +87,12 @@ def _fts_piece(piece: str) -> str:
         return piece
     if HAN.search(piece) and len(piece) >= 2:
         grams = [piece[i : i + 2] for i in range(len(piece) - 1)]
-        return "(" + " AND ".join(grams) + ")"
+        return '"' + " ".join(grams) + '"'
     return piece
 
 
-def _expand_pieces(parts: list[str]) -> list[str]:
-    out: list[str] = []
-    for p in parts:
-        out.append(p)
-        if HAN.search(p) and len(p) >= 4:
-            out.extend(p[i : i + 3] for i in range(len(p) - 2))
-    # unique preserve order
-    seen: set[str] = set()
-    uniq: list[str] = []
-    for p in out:
-        if p not in seen:
-            seen.add(p)
-            uniq.append(p)
-    return uniq
-
-
 def query_match(q: str) -> str | None:
-    parts = _expand_pieces(parse_query(q))
+    parts = parse_query(q)
     if not parts:
         return None
     return " OR ".join(_fts_piece(p) for p in parts)
@@ -403,7 +392,7 @@ def _match_gate(
     expr = query_match(q)
     if not expr:
         return None
-    real = _real_pieces(_expand_pieces(parts))
+    real = _real_pieces(parts)
     if real:
         dfs = [(p, _df(con, p, kind)) for p in real]
         if any(d == 0 and re.fullmatch(r"[A-Za-z0-9_]+", p) for p, d in dfs):
@@ -455,16 +444,35 @@ def search_index(q: str) -> list[dict]:
                 "why": why,
             }
         )
-    boost_bits = _expand_pieces(parts)
+    boost_bits = [p for p in parts if len(p) >= 2]
+    titles: dict[str, str] = {}
+    for h in out:
+        bid = str(h["book_id"])
+        if bid not in titles:
+            titles[bid] = _guide_title(bid)
     out.sort(
         key=lambda h: (
             0
-            if any(p in (h.get("name") or "") for p in boost_bits if len(p) >= 2)
+            if any(
+                p in (h.get("name") or "") and p not in titles.get(str(h["book_id"]), "")
+                for p in boost_bits
+            )
             else 1,
             h["score"],
         )
     )
     return out
+
+
+def _guide_title(slug: str) -> str:
+    p = dirs()["books"] / slug / "导读.md"
+    if not p.is_file():
+        return ""
+    try:
+        m = re.search(r"^title:\s*(.+)$", p.read_text(encoding="utf-8"), re.M)
+    except OSError:
+        return ""
+    return m.group(1).strip().strip("\"'") if m else ""
 
 
 def latin_blocked(q: str) -> bool:
