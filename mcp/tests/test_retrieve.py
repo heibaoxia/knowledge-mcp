@@ -516,6 +516,81 @@ def test_search_three_schools_does_not_drag_mao(kb):
     assert "心理学与生活" in out
 
 
+def test_literal_only_drops_book_missing_rarest_long(kb):
+    plant_book(kb, "adler", "自卑与超越", "阿德勒。", ["第三章 自卑感与优越感"], ["阿德勒说自卑感优越感来自追求。"])
+    plant_book(kb, "mao", "毛泽东选集", "著作。", ["讲话"], ["叫做自卑感，越改越卑。没有那个专名。"])
+    _plant_map(kb, "adler", "自卑与超越", ["自卑感是怎么来的"], ["革命"], "第三章 自卑感与优越感")
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("阿德勒说的自卑感和优越感是怎么来的")
+    assert "自卑与超越" in out
+    assert "毛泽东选集" not in out
+
+
+def test_single_term_literal_still_lands(kb):
+    plant_book(kb, "mao", "毛泽东选集", "著作。", ["论持久战"], ["游击战是必要的。"])
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("游击战")
+    assert "毛泽东选集" in out
+
+
+def test_suggest_uses_map_evidence_not_title_boost(kb):
+    plant_book(
+        kb, "psy", "心理学与生活", "教材。",
+        ["1 生活中的心理学", "7 记忆"],
+        ["生活中的心理学导论。", "短时记忆是记忆的一种。短时记忆。" * 20],
+    )
+    _plant_map(
+        kb, "psy", "心理学与生活",
+        ["短时记忆是怎么讲的、怎么记才记得住", "心理学三大流派有什么区别"],
+        ["怎么用 PyTorch"],
+        "7 记忆",
+    )
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("《心理学与生活》里短时记忆是怎么讲的")
+    assert "心理学与生活" in out
+    assert "7 记忆" in out
+    pos7 = out.find("7 记忆")
+    pos1 = out.find("1 生活中的心理学")
+    assert pos7 != -1
+    assert pos1 == -1 or pos7 < pos1
+
+
+def test_overview_query_suggests_guide_or_map(kb):
+    plant_book(
+        kb, "courage", "被讨厌的勇气", "阿德勒。",
+        ["推荐序一 勇气的心理学", "第四夜 要有被讨厌的勇气"],
+        ["序言勇气。", "第四夜正文。"],
+    )
+    _plant_map(kb, "courage", "被讨厌的勇气", ["总是在意别人是不是讨厌我该怎么办"], ["革命"], "第四夜 要有被讨厌的勇气")
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("《被讨厌的勇气》大概讲什么")
+    assert "被讨厌的勇气" in out
+    assert "书/courage/导读" in out or "书/courage/地图" in out
+
+
+def test_landmark_reports_hit_counts(kb):
+    plant_book(kb, "delay", "拖延心理学", "教材。", ["第一章", "第二章"], ["UNIQUE_LIT_TOKEN 甲块", "UNIQUE_LIT_TOKEN 乙块"])
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("UNIQUE_LIT_TOKEN")
+    assert "命中" in out and "块" in out
+    assert "甲块" not in out and "乙块" not in out
+
+
 def test_life_fallback_still_returns_map(kb):
     plant_book(kb, "courage", "被讨厌的勇气", "介绍。", ["第四夜"], ["完全不相干的哲人对话。"])
     _plant_map(

@@ -13,6 +13,9 @@ from knowledge_mcp.index import (
     MAP_FILE,
     SKIP_FILES,
     _block_name,
+    _df,
+    _ensure,
+    _fts_piece,
     latin_blocked,
     map_index_text,
     parse_map,
@@ -28,6 +31,8 @@ CHAR_CAP = 8000
 BATCH_LIMIT = 5
 TOTAL_CHAR_CAP = 24000
 CHAPTER_SUGGEST_LIMIT = 3
+LIT_GAP = 30
+OVERVIEW_MARKS = ("大概讲什么", "这本书讲什么", "简介")
 UNREAD_HEAD = "\n未读（整次字数顶或超过 5 块，正文没给）：\n"
 PUNCT = r"\s,，.。;；:：!！?？、·—()（）\[\]【】"
 HAN = re.compile(r"[一-鿿]+")
@@ -173,8 +178,17 @@ def _life_fallback(q: str) -> list[dict]:
     return [h for _, h in scored[:1]]
 
 
-def _why_bits(items: list[dict]) -> list[str]:
+def _why_bits(items: list[dict], q: str = "") -> list[str]:
+    parts = [p for p in parse_query(q) if len(p) >= 2] if q else []
+    blob = " ".join((it.get("ident") or "") + (it.get("name") or "") for it in items)
     bits: list[str] = []
+    for p in sorted(parts, key=len, reverse=True):
+        if p in blob and p not in bits:
+            bits.append(p)
+        if len(bits) >= 4:
+            return bits
+    if bits:
+        return bits
     for it in items:
         for p in it.get("why") or []:
             s = str(p)
@@ -228,6 +242,108 @@ def _life_literal_ok(q: str, bid: str, items: list[dict]) -> bool:
     return any(p in blob for p in longs)
 
 
+def _longs_in_corpus(q: str) -> list[str]:
+    con = _ensure()
+    out: list[str] = []
+    for p in parse_query(q):
+        if len(p) >= 3 or re.fullmatch(r"[A-Za-z0-9_]{3,}", p):
+            if _df(con, p) > 0:
+                out.append(p)
+    return out
+
+
+def _book_has_piece(bid: str, piece: str) -> bool:
+    try:
+        n = _ensure().execute(
+            "SELECT count(*) FROM docs WHERE kind != '地图' AND book_id = ? AND docs MATCH ?",
+            (bid, _fts_piece(piece)),
+        ).fetchone()[0]
+    except Exception:
+        return False
+    return int(n or 0) > 0
+
+
+def _best_score(items: list[dict]) -> float:
+    if not items:
+        return 0.0
+    return float(min(float(it.get("score") or 0) for it in items))
+
+
+def _drop_weak_literal(q: str, lit_only: list[str], both: list[str], lit_groups: dict) -> list[str]:
+    longs = _longs_in_corpus(q)
+    keep = list(lit_only)
+    if len(longs) >= 2:
+        con = _ensure()
+        min_df = min(_df(con, p) for p in longs)
+        rare = [p for p in longs if _df(con, p) == min_df]
+        keep = [b for b in keep if any(_book_has_piece(b, p) for p in rare)]
+    scored = both + keep
+    if not scored:
+        return keep
+    head = min(_best_score(lit_groups.get(("书", b), [])) for b in scored)
+    return [b for b in keep if _best_score(lit_groups.get(("书", b), [])) - head <= LIT_GAP]
+
+
+def _overlap3(q: str, left: str, title: str) -> bool:
+    for run in HAN.findall(left or ""):
+        for i in range(len(run) - 2):
+            tri = run[i : i + 3]
+            if tri in q and tri not in (title or ""):
+                return True
+    return False
+
+
+def _evidence_idents(slug: str, q: str, title: str) -> list[str]:
+    p = dirs()["books"] / slug / MAP_FILE
+    if not p.is_file():
+        return []
+    try:
+        parsed = parse_map(p.read_text(encoding="utf-8"))
+    except OSError:
+        return []
+    out: list[str] = []
+    for line in parsed.get("evidence") or []:
+        raw = str(line)
+        sep = "→" if "→" in raw else ("->" if "->" in raw else "")
+        if not sep:
+            continue
+        left, right = raw.split(sep, 1)
+        ident = right.strip()
+        if ident and ident not in out and _overlap3(q, left, title):
+            out.append(ident)
+    return out
+
+
+def _book_suggest(slug: str, q: str, lit_items: list[dict], mp: dict | None) -> list[str]:
+    title = _book_title(slug)
+    sug: list[str] = []
+    if any(m in q for m in OVERVIEW_MARKS):
+        for spec in ("导读", "地图"):
+            if (dirs()["books"] / slug / f"{spec}.md").is_file():
+                ident = f"书/{slug}/{spec}"
+                if ident not in sug:
+                    sug.append(ident)
+        return sug[:CHAPTER_SUGGEST_LIMIT]
+    for ident in _evidence_idents(slug, q, title):
+        if ident not in sug:
+            sug.append(ident)
+    bits = [p for p in parse_query(q) if len(p) >= 2 and p not in title]
+    for it in lit_items:
+        ident = it["ident"]
+        name = it.get("name") or ""
+        if ident not in sug and any(p in name for p in bits):
+            sug.append(ident)
+    for it in lit_items:
+        ident = it["ident"]
+        if ident not in sug:
+            sug.append(ident)
+    if not sug and mp:
+        for s in mp.get("suggest") or []:
+            if s not in sug:
+                sug.append(s)
+    return sug[:CHAPTER_SUGGEST_LIMIT]
+
+
 def _format_landmarks(
     lit: list[dict], maps: list[dict], life: bool, q: str
 ) -> tuple[str, int, int, int]:
@@ -273,6 +389,7 @@ def _format_landmarks(
         both = [b for b in both if _quoted_ok(b)]
         lit_only = [b for b in lit_only if _quoted_ok(b)]
         map_only = [b for b in map_only if _quoted_ok(b)]
+    lit_only = _drop_weak_literal(q, lit_only, both, lit_groups)
     if life:
         rest = [("仅地图", "书", b) for b in map_only] + [
             ("仅字面", "书", b) for b in lit_only
@@ -302,21 +419,16 @@ def _format_landmarks(
             title = _book_title(bid)
             lit_items = lit_groups.get(("书", bid), [])
             mp = map_by.get(bid)
-            sug: list[str] = []
-            for it in lit_items:
-                if it["ident"] not in sug:
-                    sug.append(it["ident"])
-            if mp:
-                for s in mp.get("suggest") or []:
-                    if s not in sug:
-                        sug.append(s)
-            if not sug and mp:
-                sug = list(mp.get("suggest") or [])
+            sug = _book_suggest(bid, q, lit_items, mp)
             lines.append(f"{n}. [{kind}] {title}  身份：{ident}")
+            n_hit = len(lit_items)
+            n_all = len(lit)
+            if n_hit:
+                lines.append(f"   命中 {n_hit} 块（全库 {n_all} 块）")
             if sug:
                 lines.extend(_suggest_lines(sug))
-            lit_why = _why_bits(lit_items)
-            map_why = _why_bits([mp] if mp else [])
+            lit_why = _why_bits(lit_items, q)
+            map_why = _why_bits([mp] if mp else [], q)
             if col == "两路都中":
                 lw = "、".join(lit_why) if lit_why else "正文"
                 mw = "、".join(map_why) if map_why else "能解决什么"
