@@ -274,6 +274,85 @@ def test_chapter_h1_not_sunk_to_h3():
     assert "记忆" in names[0]
 
 
+def test_no_atx_volume_prefixes_duplicate_pian():
+    from knowledge_mcp.ingest import split_markdown
+
+    text = (
+        "套装（第一卷）\n\n"
+        "第一篇 甲篇\n\n甲正文。\n\n"
+        "第一章 商品\n\n商品正文。\n\n"
+        "套装（第二卷）\n\n"
+        "第一篇 乙篇\n\n乙正文。\n\n"
+        "第一章 循环\n\n循环正文。\n"
+    )
+    _, _, parts = split_markdown(text, "套装")
+    names = [n for n, _ in parts]
+    vol1 = [n for n in names if "第一卷" in n]
+    vol2 = [n for n in names if "第二卷" in n]
+    assert vol1 and vol2, names
+    assert any("商品" in n for n in vol1)
+    assert any("循环" in n for n in vol2)
+    bare = [n for n in names if n in ("第一篇 甲篇", "第一篇 乙篇", "第一章 商品", "第一章 循环")]
+    assert not bare, names
+
+
+def test_no_atx_link_volume_still_counts():
+    from knowledge_mcp.ingest import split_markdown
+
+    text = (
+        "[套装（第一卷）](part1.html)\n\n"
+        "套装（第一卷）\n\n"
+        "第一篇 甲篇\n\n甲正文。\n\n"
+        "[套装（第二卷）](part2.html)\n\n"
+        "套装（第二卷）\n\n"
+        "第一篇 乙篇\n\n乙正文。\n"
+    )
+    _, _, parts = split_markdown(text, "套装")
+    names = [n for n, _ in parts]
+    assert any("第一卷" in n and "甲篇" in n for n in names), names
+    assert any("第二卷" in n and "乙篇" in n for n in names), names
+
+
+def test_yi_clause_not_a_cut_without_atx():
+    from knowledge_mcp.ingest import split_markdown
+
+    text = (
+        "第一章 革命委员会\n\n章引言。\n\n"
+        "一、必须坚决支持真正的无产阶级革命派，争取团结大多数\n\n条款正文。\n\n"
+        "第二章 不进则退\n\n另一章。\n"
+    )
+    _, _, parts = split_markdown(text, "史")
+    names = [n for n, _ in parts]
+    assert len(parts) == 2, names
+    assert "必须坚决" in parts[0][1]
+    assert not any(n.startswith("一、") for n in names)
+
+
+def test_toc_link_is_not_a_cut():
+    from knowledge_mcp.ingest import split_markdown
+
+    text = (
+        "[套装（第一卷）](a.html)\n\n"
+        "[第一章 商品](b.html)\n\n"
+        "套装（第一卷）\n\n"
+        "第一章 商品\n\n真正的商品正文若干字。\n"
+    )
+    _, _, parts = split_markdown(text, "套装")
+    assert len(parts) == 1, [n for n, _ in parts]
+    assert "第一卷" in parts[0][0] and "商品" in parts[0][0]
+    assert "真正的商品" in parts[0][1]
+
+
+def test_short_yi_title_still_cuts_when_no_atx():
+    from knowledge_mcp.ingest import split_markdown
+
+    text = "一、总则\n\n总则正文。\n\n二、分则\n\n分则正文。\n"
+    _, _, parts = split_markdown(text, "法")
+    assert len(parts) == 2
+    assert "总则" in parts[0][0]
+    assert "分则" in parts[1][0]
+
+
 def test_guide_comes_from_headings_not_llm(kb, monkeypatch):
     md = fake_markdown("矛盾论")
     _patch_convert(monkeypatch, md)
@@ -310,3 +389,46 @@ def test_convert_one_calls_invalidate(kb, monkeypatch):
 
     convert_one(src)
     assert called
+
+
+def test_image_only_ingest_leaves_source(kb, monkeypatch):
+    md = "封面\n\n" + "\n".join(f"![p](img-{i}.jpg)" for i in range(30))
+    _patch_convert(monkeypatch, md)
+    src = drop_source(kb, "scan-only.epub")
+    from knowledge_mcp.ingest import ingest_inbox
+
+    out = ingest_inbox()
+    assert out.startswith("失败")
+    assert "无文字层" in out or "不 OCR" in out
+    assert src.exists()
+    assert list((kb / "资料" / "书").glob("*")) == []
+    assert list((kb / "原始资料归档").glob("*")) == []
+
+
+def test_numeric_stem_gets_hash_slug(kb, monkeypatch):
+    _patch_convert(monkeypatch, fake_markdown("林间史"))
+    drop_source(kb, "123-456.epub")
+    from knowledge_mcp.ingest import ingest_inbox
+
+    out = ingest_inbox()
+    assert not out.startswith("失败"), out
+    books = [p for p in (kb / "资料" / "书").iterdir() if p.is_dir()]
+    assert len(books) == 1
+    assert books[0].name.startswith("book-")
+    assert books[0].name != "123-456"
+    guide = (books[0] / "导读.md").read_text(encoding="utf-8")
+    assert "林间史" in guide
+
+
+def test_pick_title_skips_chapter_heading(kb, monkeypatch):
+    md = "# 第一章 现代民族国家\n\n正文若干字。\n\n## 第二节 某处\n\n还是正文。\n"
+    _patch_convert(monkeypatch, md)
+    drop_source(kb, "forest-history.pdf")
+    from knowledge_mcp.ingest import ingest_inbox
+
+    out = ingest_inbox()
+    assert not out.startswith("失败"), out
+    guide = next((kb / "资料" / "书").glob("*/导读.md")).read_text(encoding="utf-8")
+    title_line = guide.split("title:", 1)[1].splitlines()[0]
+    assert "第一章" not in title_line
+    assert "forest-history" in guide or "forest" in guide.lower()

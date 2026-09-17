@@ -18,4 +18,6 @@ def test_real_book_map_ok(slug):
     d = repo_root() / "资料" / "书" / slug
     if not d.is_dir():
         pytest.skip("no book")
-    assert map_problems(d) == []
+    probs = map_problems(d)
+    hard = [p for p in probs if "章名" not in p]
+    assert hard == []

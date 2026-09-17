@@ -10,7 +10,7 @@ import yaml
 
 from knowledge_mcp.errors import fail
 from knowledge_mcp.index import MAP_FILE, ident_exists, invalidate, map_problems
-from knowledge_mcp.ingest import slugify, uniquify
+from knowledge_mcp.ingest import book_health, slugify, uniquify, withdraw_book
 from knowledge_mcp.log import guarded, log_call, read_calls
 from knowledge_mcp.paths import dirs
 from knowledge_mcp.retrieve import _ident_of, search, split_frontmatter
@@ -356,6 +356,16 @@ def _map_path(ident: str) -> Path | None:
     return None
 
 
+def _book_slug(ident: str) -> str | None:
+    t = ident.replace("\\", "/").strip().strip("/")
+    if t.startswith("资料/"):
+        t = t[len("资料/") :]
+    bits = [b for b in t.split("/") if b]
+    if len(bits) == 2 and bits[0] == "书" and bits[1]:
+        return bits[1]
+    return None
+
+
 def _touches_book(raw: str) -> bool:
     if _map_path(raw):
         return False
@@ -434,13 +444,22 @@ def _scan() -> str:
                 blocks = [p for p in d.glob("*.md") if p.name not in ("导读.md", MAP_FILE)]
                 if blocks and mp.stat().st_mtime < max(p.stat().st_mtime for p in blocks):
                     flags.append(f"- {ident}：早于重切")
+            try:
+                gmeta, _ = split_frontmatter(guide.read_text(encoding="utf-8"))
+            except OSError:
+                gmeta = {}
+            title = str((gmeta or {}).get("title") or d.name)
+            for reason in book_health(d):
+                flags.append(f"- 书/{d.name}：《{title}》：{reason}")
     if not flags:
         out = "净化清单（只列不删）\n没有可疑项。\n"
     else:
         out = (
             "净化清单（只列不删）\n"
             + "\n".join(flags)
-            + "\n动手请 action=apply 提交 JSON 清单，只许笔记和地图，不动书正文。\n"
+            + "\n动手请 action=apply 提交 JSON 清单。"
+            "笔记 delete/update/merge；地图 update/stale；"
+            '退整本 {"op":"withdraw","target":"书/<slug>"}。不能退某一章。\n'
         )
     log_call("kb_lint_notes", True, action="scan", n=len(flags))
     return out
@@ -471,13 +490,35 @@ def _apply(plan_text: str) -> str:
             out = fail("净化-动手", "清单项必须是对象。", "库不变", "改 JSON。")
             log_call("kb_lint_notes", False, action="apply", step="清单")
             return out
+        op = str(item.get("op") or "").lower()
+        if op == "withdraw":
+            slug = _book_slug(str(item.get("target") or ""))
+            if slug is None:
+                out = fail(
+                    "净化-动手",
+                    "退书只许 书/<slug>。整单拒绝。",
+                    "库不变",
+                    '用 {"op":"withdraw","target":"书/<slug>"}，不能退某一章。',
+                )
+                log_call("kb_lint_notes", False, action="apply", step="退书")
+                return out
+            if not (dirs()["books"] / slug).is_dir():
+                out = fail(
+                    "净化-动手",
+                    f"没有这本书：{slug}。整单拒绝。",
+                    "库不变",
+                    "对照 scan 清单上的 书/<slug> 再交。",
+                )
+                log_call("kb_lint_notes", False, action="apply", step="退书")
+                return out
+            continue
         for raw in _targets_of(item):
             if _touches_book(raw):
                 out = fail(
                     "净化-动手",
                     "清单碰到书，整单拒绝。",
                     "库不变",
-                    "从清单里拿掉书正文，只处理笔记和地图。",
+                    "从清单里拿掉书正文，只处理笔记和地图。退整本用 withdraw。",
                 )
                 log_call("kb_lint_notes", False, action="apply", step="护书")
                 return out
@@ -486,11 +527,10 @@ def _apply(plan_text: str) -> str:
                     "净化-动手",
                     f"身份不是笔记或地图：{raw}。整单拒绝。",
                     "库不变",
-                    "只许 笔记/<slug> 或 书/<slug>/地图。",
+                    "只许 笔记/<slug> 或 书/<slug>/地图。退整本用 withdraw。",
                 )
                 log_call("kb_lint_notes", False, action="apply", step="护书")
                 return out
-        op = str(item.get("op") or "").lower()
         is_map = _map_path(str(item.get("target") or item.get("into") or "")) is not None
         allowed = ("update", "stale") if is_map else ("delete", "update", "merge")
         if op not in allowed:
@@ -498,17 +538,30 @@ def _apply(plan_text: str) -> str:
                 "净化-动手",
                 f"不认识的 op：{op}。整单拒绝。",
                 "库不变",
-                "笔记 op 用 delete / update / merge；地图用 update / stale。",
+                "笔记 op 用 delete / update / merge；地图用 update / stale；整本用 withdraw。",
             )
             log_call("kb_lint_notes", False, action="apply", step="op")
             return out
     done: list[str] = []
     for item in plan:
         op = str(item.get("op") or "").lower()
-        if op == "delete":
+        if op == "withdraw":
+            slug = _book_slug(str(item.get("target") or "")) or ""
+            try:
+                info = withdraw_book(slug)
+            except ValueError as e:
+                out = fail("净化-动手", str(e), "库不变", "对照 scan 清单再交。")
+                log_call("kb_lint_notes", False, action="apply", step="退书")
+                return out
+            src = info["source"] or "导读未写 source"
+            done.append(
+                f"已退 书/{info['slug']} 《{info['title']}》；源文件仍在 {src}。要再入走指定入库。"
+            )
+        elif op == "delete":
             path = _note_path(str(item.get("target") or ""))
             if path and path.is_file():
                 path.unlink()
+                invalidate()
                 done.append(f"删 笔记/{path.stem}")
         elif op == "stale":
             mp = _map_path(str(item.get("target") or ""))
@@ -552,6 +605,7 @@ def _apply(plan_text: str) -> str:
             md = item.get("markdown") or ""
             if path and md:
                 path.write_text(str(md), encoding="utf-8")
+                invalidate()
                 done.append(f"改 笔记/{path.stem}")
         elif op == "merge":
             into = _note_path(str(item.get("into") or item.get("target") or ""))
@@ -565,6 +619,7 @@ def _apply(plan_text: str) -> str:
                 other = _note_path(str(raw))
                 if other and other.is_file() and other != into:
                     other.unlink()
+            invalidate()
             done.append(f"合并 → 笔记/{into.stem}")
     out = "净化已执行\n" + "\n".join(f"- {x}" for x in done) + "\n"
     log_call("kb_lint_notes", True, action="apply", n=len(done))

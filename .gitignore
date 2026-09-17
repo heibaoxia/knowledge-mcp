@@ -31,6 +31,10 @@ Desktop.ini
 # runtime log (query text) — local only
 检修/calls.jsonl
 
+# 索引缓存（可扔，从 资料/ 重建）
+mcp/.kb-index.sqlite
+mcp/.kb-index.sqlite-*
+
 # 书 / 笔记 正本：只留本地，不 push（书是私产，笔记是私话）
 资料/书/*
 !资料/书/.gitkeep

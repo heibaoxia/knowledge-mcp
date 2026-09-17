@@ -451,7 +451,7 @@ def test_map_only_life_query(kb):
     out = search(q)
     assert "被讨厌的勇气" in out
     assert "毛泽东选集" not in out
-    assert "仅地图" in out or "两路都中" in out
+    assert "仅语义" in out or "两路都中" in out
     assert "课题分离" not in out
 
 
@@ -637,7 +637,7 @@ def test_map_column_ignores_single_char_piece(kb):
 
 def test_life_query_keeps_map_only_long_piece(kb):
     # S4：生活口吻问句没有术语，长片（意别人 / 不是讨厌我）只在期望书地图里，
-    # 正文一个口语片都没有 → 仍要能靠仅地图进路标。
+    # 正文一个口语片都没有 → 仍要能靠仅语义进路标。
     plant_book(kb, "life", "生活的问法", "对话。", ["第一章 对话"], ["哲人对话，没有这些口语。"])
     _plant_map(
         kb, "life", "生活的问法",
@@ -652,7 +652,7 @@ def test_life_query_keeps_map_only_long_piece(kb):
     invalidate()
     out = search("我总是很在意别人是不是讨厌我，该怎么办")
     assert "生活的问法" in out
-    assert "仅地图" in out or "两路都中" in out
+    assert "仅语义" in out or "两路都中" in out
 
 
 def test_literal_only_keeps_book_with_single_long_piece(kb):
@@ -743,4 +743,146 @@ def test_life_fallback_still_returns_map(kb):
     invalidate()
     out = search("我总是很在意别人是不是讨厌我，该怎么办")
     assert "被讨厌的勇气" in out
-    assert "仅地图" in out or "两路都中" in out
+    assert "仅语义" in out or "两路都中" in out
+
+
+def test_glued_missing_piece_falls_back_to_edge_substring(kb):
+    # S6：长片整串 DF=0，只剥两边，闲书不得占格。
+    plant_book(
+        kb, "core", "核素分层入门", "讲核素分层。",
+        ["第一章 核素分层"], ["核素分层是把层次分开的办法。"],
+    )
+    plant_book(kb, "noise", "杂谈语录", "随笔。", ["第一章 闲话"], ["分析" * 200])
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("核素分层里讲了什么")
+    assert "核素分层入门" in out
+    assert "杂谈语录" not in out
+
+
+def test_quoted_title_is_an_extra_piece(kb):
+    # S7：书名含功能字「被/的」，问句用《》。闲书地图里有「大概讲」。
+    plant_book(
+        kb, "night", "被夜航的对照", "对照。",
+        ["第一章 对照"], ["对照的正文，没有大概讲三个字。"],
+    )
+    _plant_map(
+        kb, "night", "被夜航的对照",
+        ["夜航时怎么对照航路", "对照录能解决什么疑惑", "夜里看航标怎么办"],
+        ["量子场论"],
+        "第一章 对照",
+    )
+    plant_book(kb, "decoy", "别本札记", "闲。", ["第一章"], ["别的正文。"])
+    _plant_map(
+        kb, "decoy", "别本札记",
+        ["这本书大概讲过别的事", "札记怎么写", "闲话怎么聊"],
+        ["量子场论"],
+        "第一章",
+    )
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("《被夜航的对照》大概讲什么")
+    assert "被夜航的对照" in out
+    assert "书/night/导读" in out or "书/night/地图" in out
+
+
+def test_nav_block_name_is_not_a_literal_hit(kb):
+    # S8：导航件块名不进字面。
+    plant_book(kb, "idx", "核素札记", "札记。", ["索引"], ["这篇按设计不进索引正文。核素札记补充句。"])
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("索引")
+    assert "书/idx/索引" not in out
+
+
+def test_image_shell_book_stays_out_of_literal(kb):
+    # S9：无正文扫描壳不进仅字面/两路都中。
+    imgs = "\n".join(f"![](p-{i}.jpg)" for i in range(30))
+    plant_book(kb, "shell", "镜中残页", "扫描。", ["正文"], [imgs])
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("镜中残页里写了什么")
+    assert "仅字面" not in out or "镜中残页" not in out
+    assert "两路都中" not in out or "镜中残页" not in out
+
+
+def test_aboutness_drops_body_only_proper_name(kb):
+    # S10：闲书正文大写专名，地图/章名/书名都不讲问句的主题片。
+    plant_book(
+        kb, "tide", "潮汐札记", "讲潮。",
+        ["潮"], ["潮怎么解释。潮汐核素也写在正文里。"],
+    )
+    _plant_map(
+        kb, "tide", "潮汐札记",
+        ["潮怎么解释", "潮和睡眠有什么关系", "夜里的潮从哪来"],
+        ["量子场论"],
+        "潮",
+    )
+    plant_book(
+        kb, "aside", "街边对照", "闲谈。",
+        ["第一章 闲坐"], ["潮汐核素" * 40],
+    )
+    _plant_map(
+        kb, "aside", "街边对照",
+        ["怎么记流水账", "茶怎么泡", "闲话怎么聊"],
+        ["量子场论"],
+        "第一章 闲坐",
+    )
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("潮是怎么被解释的，潮汐核素怎么看")
+    assert "潮汐札记" in out
+    assert "街边对照" not in out
+
+
+def test_aboutness_keeps_two_topical_books(kb):
+    # S11：一本靠章名、一本靠地图，都得留。
+    plant_book(
+        kb, "alpha", "核素回忆", "回忆。",
+        ["早期核素"], ["早期核素写在章里。"],
+    )
+    _plant_map(
+        kb, "alpha", "核素回忆",
+        ["早期核素是怎么来的", "小时候的核素怎么记", "核素和性格"],
+        ["量子场论"],
+        "早期核素",
+    )
+    plant_book(
+        kb, "beta", "人格讲义", "讲义。",
+        ["第一章 人格"], ["早期核素影响人格。早期核素。"],
+    )
+    _plant_map(
+        kb, "beta", "人格讲义",
+        ["人格是怎么形成的", "早期核素怎么进人格", "记忆和人格"],
+        ["量子场论"],
+        "第一章 人格",
+    )
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("早期核素怎么影响一个人的人格")
+    assert "核素回忆" in out
+    assert "人格讲义" in out
+
+
+def test_aboutness_does_not_drop_lone_body_term(kb):
+    # S12：短词只在正文、结果集没有 aboutness 对照 → 仍回捞。
+    plant_book(kb, "side", "核素边注", "边注。", ["第一章"], ["横向核素出现在正文。"])
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    out = search("横向核素")
+    assert "核素边注" in out
+    assert "仅字面" in out

@@ -14,7 +14,7 @@ from pathlib import Path
 import yaml
 
 from knowledge_mcp.errors import fail
-from knowledge_mcp.index import invalidate, map_problems
+from knowledge_mcp.index import MAP_FILE, fill_chapter_names, invalidate, map_problems
 from knowledge_mcp.log import guarded, log_call
 from knowledge_mcp.paths import dirs
 
@@ -75,6 +75,106 @@ def slugify(name: str) -> str:
     return s[:60]
 
 
+WINDOW = 8000
+LONG_BLOCK = 8 * WINDOW
+CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+IMG_LINE_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
+HOLLOW_SLUG_RE = re.compile(r"^[0-9]+(?:-[0-9]+)*$")
+CHAPTER_TITLE_RE = re.compile(r"^第[0-9一二三四五六七八九十百千零〇两]+章")
+SLUG_OK_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _cjk_count(text: str) -> int:
+    return len(CJK_RE.findall(text or ""))
+
+
+def _img_lines(text: str) -> int:
+    return sum(1 for ln in (text or "").splitlines() if IMG_LINE_RE.search(ln))
+
+
+def is_no_text_layer(text: str) -> bool:
+    cjk = _cjk_count(text)
+    imgs = _img_lines(text)
+    if imgs >= 20 and cjk < imgs * 8:
+        return True
+    if cjk < 200 and imgs >= 5:
+        return True
+    return False
+
+
+def _short_block_name(stem: str) -> str:
+    m = re.match(r"^\d+-", stem)
+    name = stem[m.end() :] if m else stem
+    return re.sub(r"-\d+$", "", name)
+
+
+def book_health(book_dir: Path) -> list[str]:
+    """机械未入完。不含缺地图（那是 map_problems）。"""
+    book_dir = Path(book_dir)
+    flags: list[str] = []
+    if HOLLOW_SLUG_RE.match(book_dir.name):
+        flags.append("空心目录名")
+    bodies: list[str] = []
+    shorts: list[str] = []
+    rare_names = 0
+    long_hit = False
+    for p in book_dir.glob("*.md"):
+        if p.name in ("导读.md", MAP_FILE):
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        bodies.append(text)
+        if len(text) > LONG_BLOCK:
+            long_hit = True
+        shorts.append(_short_block_name(p.stem))
+        if "\ufffd" in p.name:
+            rare_names += 2
+        else:
+            rare_names += sum(
+                1
+                for ch in p.name
+                if (0x3400 <= ord(ch) <= 0x4DBF) or ord(ch) >= 0x20000
+            )
+    if long_hit:
+        flags.append("超长块")
+    counts: dict[str, int] = {}
+    for n in shorts:
+        counts[n] = counts.get(n, 0) + 1
+    if any(c >= 3 for c in counts.values()):
+        flags.append("同名章撞车")
+    if rare_names >= 2:
+        flags.append("文件名乱码")
+    if is_no_text_layer("\n".join(bodies)):
+        flags.append("无文字层")
+    return flags
+
+
+def withdraw_book(slug: str) -> dict:
+    """只删 资料/书/<slug>/。不存在则 raise ValueError。"""
+    slug = (slug or "").strip().strip("/")
+    if not slug or not SLUG_OK_RE.fullmatch(slug):
+        raise ValueError("退书只许 书/<slug>")
+    book = dirs()["books"] / slug
+    if not book.is_dir():
+        raise ValueError(f"没有这本书：{slug}")
+    title, source = slug, ""
+    guide = book / "导读.md"
+    if guide.is_file():
+        raw = guide.read_text(encoding="utf-8")
+        if raw.startswith("---"):
+            bits = raw.split("---", 2)
+            if len(bits) >= 3:
+                meta = yaml.safe_load(bits[1]) or {}
+                if isinstance(meta, dict):
+                    title = str(meta.get("title") or slug)
+                    source = str(meta.get("source") or "")
+    shutil.rmtree(book)
+    invalidate()
+    return {"slug": slug, "title": title, "source": source}
+
+
 JUNK_RE = re.compile(
     r"(?:https?://\S+|www\.\S+"
     r"|z-library\S*|1lib\S*|z-lib\S*|libgen\S*|annas-archive\S*"
@@ -91,7 +191,10 @@ def slug_base(name: str) -> str:
     s = re.sub(r"\s+", " ", s)
     s = re.sub(r"\(\s*\)|\[\s*\]|\{\s*\}", " ", s)
     s = re.sub(r"\s*[=—–]+\s*", " ", s).strip(" ._-()[]{}")
-    return slugify(s) or f"book-{hashlib.sha1(name.encode('utf-8')).hexdigest()[:8]}"
+    s = slugify(s)
+    if not s or HOLLOW_SLUG_RE.match(s):
+        return f"book-{hashlib.sha1(name.encode('utf-8')).hexdigest()[:8]}"
+    return s
 
 
 def safe_filename(name: str, limit: int = 60) -> str:
@@ -151,15 +254,19 @@ def unique_slug(base: str) -> str:
 
 
 ATX_RE = re.compile(r"^(#{1,6}) (.+)$")
+NUM_CN = r"[0-9一二三四五六七八九十百千零〇两]+"
 STRUCT_RE = re.compile(
-    r"^(第[0-9一二三四五六七八九十百千零〇两]+[章节篇]"
+    rf"^(第{NUM_CN}[章节篇]"
     r"|[一二三四五六七八九十]+、"
     r"|（[一二三四五六七八九十]+）"
     r"|壹、)"
 )
 HEADING_JUNK_RE = re.compile(r"\[\\?\*\]\(#id[^)]*\)")
 MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
-VOLUME_RE = re.compile(r"第[0-9一二三四五六七八九十百千零〇两]+卷")
+VOLUME_RE = re.compile(rf"第{NUM_CN}卷")
+VOL_LABEL_RE = re.compile(rf"第{NUM_CN}[卷册]")
+CHAPTER_HEAD_RE = re.compile(rf"^第{NUM_CN}[章节篇]")
+YI_HEAD_RE = re.compile(r"^([一二三四五六七八九十]+、|（[一二三四五六七八九十]+）|壹、)(.*)$")
 
 
 def clean_heading(name: str) -> str:
@@ -171,12 +278,69 @@ def clean_heading(name: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def is_structure_line(line: str) -> bool:
-    """无 ATX 时才当切点：第一章 / 一、 / （一）。"""
+def _plain_line(line: str) -> str:
+    return clean_heading(line.strip())
+
+
+def _short_uncut(s: str) -> bool:
+    return bool(s) and len(s) <= 40 and s[-1] not in "。！？：；"
+
+
+def is_toc_link_line(line: str) -> bool:
+    """目录里的 [章名](part.html)，不当切点、不当卷行。"""
     s = line.strip()
-    if not s or len(s) > 40:
+    if s.startswith(">"):
+        s = s[1:].strip()
+    return s.startswith("[") and "](" in s
+
+
+def volume_label(line: str) -> str | None:
+    """短标题行里的第X卷/册。脚注『版第2卷』『第8卷和第13卷』不算。"""
+    if is_toc_link_line(line):
+        return None
+    s = _plain_line(line)
+    if not s or len(s) > 30 or CHAPTER_HEAD_RE.match(s) or "页" in s:
+        return None
+    if any(ch in s for ch in "，。；") or "——" in s or "—" in s:
+        return None
+    m = re.match(rf"^(第{NUM_CN}[卷册])(?:\s*\S.*)?$", s)
+    if m:
+        return m.group(1)
+    m = re.search(rf"（(第{NUM_CN}[卷册])）", s)
+    if m and len(s) <= 24:
+        return m.group(1)
+    if re.match(r"^[上下]册(?:\s|$)", s):
+        return s[:2]
+    return None
+
+
+def is_volume_line(line: str) -> bool:
+    return volume_label(line) is not None
+
+
+def is_yi_clause(s: str) -> bool:
+    """一、后面是条款句子，不是短标题。"""
+    m = YI_HEAD_RE.match(s)
+    if not m:
         return False
-    if s[-1] in "。！？：；":
+    rest = (m.group(2) or "").strip()
+    if len(rest) > 16:
+        return True
+    if any(ch in rest for ch in "，。；"):
+        return True
+    return False
+
+
+def is_structure_line(line: str) -> bool:
+    """无 ATX 时才当切点：第一章 / 短「一、标题」。册/卷、条款、目录链接不当切点。"""
+    if is_toc_link_line(line):
+        return False
+    s = _plain_line(line)
+    if not _short_uncut(s):
+        return False
+    if is_volume_line(line):
+        return False
+    if is_yi_clause(s):
         return False
     return bool(STRUCT_RE.match(s))
 
@@ -296,8 +460,13 @@ def pick_title(candidates: list[str], fallback: str, meta_title: str | None) -> 
     if meta_title and meta_title.strip():
         return meta_title.strip()
     for c in candidates:
-        if c.strip() and not looks_boilerplate(c):
-            return c.strip()
+        s = c.strip()
+        if not s or looks_boilerplate(s):
+            continue
+        rest = re.sub(rf"^第{NUM_CN}[卷册]\s*", "", s)
+        if CHAPTER_TITLE_RE.match(rest) or re.match(rf"^第{NUM_CN}[节篇]", rest):
+            continue
+        return s
     return fallback
 
 
@@ -319,12 +488,34 @@ def split_markdown(
         cuts = _natural_cuts(atx, L)
         starts = _part_starts(lines, cuts, atx, L)
     else:
-        cuts = [
-            (i, clean_heading(line.strip()))
-            for i, line in enumerate(lines)
-            if is_structure_line(line)
-        ]
-        starts = [0 if n == 0 else i for n, (i, _) in enumerate(cuts)]
+        cuts = []
+        vol = ""
+        for i, line in enumerate(lines):
+            lab = volume_label(line)
+            if lab:
+                vol = lab
+                continue
+            if is_structure_line(line):
+                name = _plain_line(line)
+                if vol and vol not in name:
+                    name = f"{vol} {name}"
+                cuts.append((i, name))
+        starts = []
+        for n, (i, _) in enumerate(cuts):
+            if n == 0:
+                starts.append(0)
+                continue
+            start, j, prev = i, i - 1, cuts[n - 1][0]
+            while j > prev:
+                if not lines[j].strip():
+                    j -= 1
+                    continue
+                if is_volume_line(lines[j]):
+                    start = j
+                    j -= 1
+                    continue
+                break
+            starts.append(start)
     candidates = (
         [name for _, name in h1]
         or [name for _, name in h2]
@@ -440,6 +631,10 @@ def convert_one(src: Path) -> dict:
     with tempfile.TemporaryDirectory(prefix="kb-") as td:
         md_path = run_markitdown(src, Path(td))
         text = md_path.read_text(encoding="utf-8")
+    if is_no_text_layer(text):
+        raise RuntimeError(
+            "转换产物几乎没有可检索的正文（无文字层）。本工具不 OCR。换文字版再入，或不要这本。"
+        )
     title, _candidates, parts = split_markdown(
         text, src.stem, meta_title=epub_title(src)
     )
@@ -469,6 +664,7 @@ def convert_one(src: Path) -> dict:
     (book_dir / "导读.md").write_text(
         render_guide(title, intro, names, rel), encoding="utf-8"
     )
+    fill_chapter_names(book_dir)
     invalidate()
     return {
         "slug": slug,
@@ -476,6 +672,7 @@ def convert_one(src: Path) -> dict:
         "archive": rel,
         "dir": book_dir.as_posix(),
         "map_ok": not map_problems(book_dir),
+        "health": book_health(book_dir),
     }
 
 
@@ -489,14 +686,24 @@ def ingest_sources(files: list[Path], step_prefix: str) -> str:
             failed.append((src, str(e), i))
     lines = []
     missing = 0
+    unfinished: list[str] = []
     for item in ok:
         lines.append(f"- {item['title']} → 资料/书/{item['slug']}/导读.md ；源文件 {item['archive']}")
+        reasons: list[str] = []
         if not item.get("map_ok"):
             missing += 1
+            reasons.append("缺地图")
+        for r in item.get("health") or []:
+            if r not in reasons:
+                reasons.append(r)
+        if reasons:
+            unfinished.append(f"未入完 书/{item['slug']}：{'；'.join(reasons)}")
     if not failed:
         out = f"入库完成\n成功 {len(ok)} 本\n" + "\n".join(lines) + "\n"
         if missing:
             out += f"缺地图 {missing} 本（源文件已归档，不算入完；补 资料/书/<slug>/地图.md）\n"
+        if unfinished:
+            out += "\n".join(unfinished) + "\n"
         return out
     why = "；".join(f"{p.name}：{err}" for p, err, _ in failed)
     step = f"{step_prefix}-转换第 {failed[0][2]} 个文件"

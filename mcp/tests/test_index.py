@@ -231,6 +231,9 @@ generated: true
 - 总是拖到截止日期前一晚才动手怎么办 → 书/delay/第一章 为什么拖
 - 明明想改却还是把事情往后推怎么办 → 书/delay/第一章 为什么拖
 - 工作一难就先刷手机该怎么收 → 书/delay/第一章 为什么拖
+
+## 章名
+- 第一章 为什么拖
 """
 
 
@@ -308,3 +311,94 @@ def test_search_maps_hits_solves_not_notsolves(kb):
     assert hits and hits[0]["book_id"] == "courage"
     lit = search_index("讨厌")
     assert all("/地图" not in h["ident"] for h in lit)
+
+
+def test_parse_map_keeps_chapter_and_alias(kb):
+    from knowledge_mcp.index import parse_map
+
+    p = parse_map(
+        VALID
+        + "\n## 别名\n- 北窗事变 → 书/delay/第一章 为什么拖\n"
+        + "\n## 主题词\n- 拖延\n- 截止日期\n"
+    )
+    assert "第一章 为什么拖" in p["chapters"]
+    assert p["alias_lefts"] == ["北窗事变"]
+    assert "拖延" in p["topics"]
+
+
+def test_alias_bans_common_left(kb):
+    from knowledge_mcp.index import map_problems
+
+    d = _guide(kb, "delay", "拖延心理学", ["第一章 为什么拖"])
+    (d / "地图.md").write_text(
+        VALID + "\n## 别名\n- 变化 → 书/delay/第一章 为什么拖\n",
+        encoding="utf-8",
+    )
+    assert any("公共词" in x or "别名" in x for x in map_problems(d))
+
+
+def test_map_index_text_includes_alias_left(kb):
+    from knowledge_mcp.index import map_index_text
+
+    blob = map_index_text(VALID + "\n## 别名\n- 北窗事变 → 书/delay/第一章 为什么拖\n")
+    assert "北窗事变" in blob
+    assert "第一章 为什么拖" in blob
+
+
+def test_search_index_hits_map_alias_column(kb):
+    _plant_book(kb, "beichuang", "北窗纪略", {"01-整风章.md": "# 整风章\n\n整风以后。\n"})
+    (kb / "资料" / "书" / "beichuang" / "地图.md").write_text(
+        "---\ntitle: 北窗纪略\ntype: 地图\nbook: 书/beichuang\ngenerated: true\n---\n\n"
+        "## 能解决什么\n- 整风以后诸事怎么排\n- 怎么记旧账\n- 潮势怎么算\n\n"
+        "## 不解决什么\n- 量子场论\n\n"
+        "## 建议从哪读\n- 书/beichuang/整风章\n\n"
+        "## 依据块\n- 整风以后诸事怎么排 → 书/beichuang/整风章\n"
+        "- 怎么记旧账 → 书/beichuang/整风章\n"
+        "- 潮势怎么算 → 书/beichuang/整风章\n\n"
+        "## 章名\n- 整风章\n\n"
+        "## 别名\n- 北窗事变 → 书/beichuang/整风章\n",
+        encoding="utf-8",
+    )
+    from knowledge_mcp.index import invalidate, search_index
+
+    invalidate()
+    hits = search_index("北窗事变")
+    assert any(h.get("book_id") == "beichuang" for h in hits)
+
+
+def test_fill_chapter_names_appends_missing_section(kb):
+    from knowledge_mcp.index import fill_chapter_names, map_problems
+
+    d = _guide(kb, "delay", "拖延心理学", ["第一章 为什么拖"])
+    thin = VALID.replace("## 章名\n- 第一章 为什么拖\n", "")
+    (d / "地图.md").write_text(thin, encoding="utf-8")
+    assert any("章名" in x for x in map_problems(d))
+    assert fill_chapter_names(d)
+    assert map_problems(d) == []
+    assert "第一章 为什么拖" in (d / "地图.md").read_text(encoding="utf-8")
+
+
+def test_api_embed_reads_openai_payload(monkeypatch):
+    import json
+
+    from knowledge_mcp import index as ix
+
+    class _Resp:
+        def read(self):
+            return json.dumps(
+                {"data": [{"index": 0, "embedding": [3.0, 0.0]}, {"index": 1, "embedding": [0.0, 4.0]}]}
+            ).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setenv("KNOWLEDGE_EMBED_KEY", "x")
+    monkeypatch.setenv("KNOWLEDGE_EMBED_URL", "https://example.invalid/v1")
+    monkeypatch.setattr(ix.urllib.request, "urlopen", lambda *a, **k: _Resp())
+    vecs = ix._api_embed(["甲", "乙"])
+    assert len(vecs) == 2
+    assert abs(vecs[0][0] - 1.0) < 1e-6
+    assert abs(vecs[1][1] - 1.0) < 1e-6

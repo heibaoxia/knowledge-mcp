@@ -20,6 +20,35 @@ def plant_book(kb: Path) -> Path:
     return p
 
 
+def plant_kit(kb: Path, title: str = "林间史") -> Path:
+    """合成书 kit：假书名、假 slug，独立于旧护书测试那本 delay。"""
+    d = kb / "资料" / "书" / "kit"
+    d.mkdir(parents=True)
+    (d / "导读.md").write_text(
+        f"---\ntitle: {title}\ntype: 书\nintro: 合成。\n---\n\n# {title}\n",
+        encoding="utf-8",
+    )
+    (d / "01-长.md").write_text("合成正文。\n", encoding="utf-8")
+    return d
+
+
+def plant_oversized_book(kb: Path, slug: str = "oversize", chars: int = 70000) -> Path:
+    """一块长到不像章的书：字符数过 8 个阅读窗。"""
+    d = kb / "资料" / "书" / slug
+    d.mkdir(parents=True)
+    (d / "导读.md").write_text(
+        f"---\ntitle: 合成长块\ntype: 书\nintro: 测超长。\n---\n\n# 合成长块\n",
+        encoding="utf-8",
+    )
+    (d / "01-长.md").write_text("字" * chars + "\n", encoding="utf-8")
+    return d
+
+
+def fs_snapshot(root: Path) -> set[str]:
+    """盘上所有文件的相对路径。scan 只列不删，前后必须一模一样。"""
+    return {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
+
+
 SHORT = "---\ntitle: 短\ntype: 笔记\nintro: 太短了。\n---\n\n嗯。\n"
 DUP_A = "---\ntitle: 同一主题\ntype: 笔记\nintro: 第一条。\n---\n\n" + "内容甲。" * 20 + "\n"
 DUP_B = "---\ntitle: 同一主题\ntype: 笔记\nintro: 第二条。\n---\n\n" + "内容乙。" * 20 + "\n"
@@ -80,6 +109,7 @@ GOOD_MAP = (
     "## 依据块\n- 总是拖到截止日期前一晚怎么办 → 书/delay/正文\n"
     "- 明明想改却往后推怎么办 → 书/delay/正文\n"
     "- 工作一难就刷手机怎么办 → 书/delay/正文\n"
+    "\n## 章名\n- 正文\n"
 )
 
 
@@ -138,3 +168,126 @@ def test_apply_chapter_still_rejected(kb):
     assert "原书不可改" in (kb / "资料" / "书" / "delay" / "正文.md").read_text(
         encoding="utf-8"
     )
+
+
+def test_withdraw_removes_book_keeps_notes(kb):
+    plant_book(kb)
+    keep = plant_note(kb, "keep", KEEP)
+    from knowledge_mcp.notes import lint_notes
+
+    out = lint_notes("apply", '[{"op":"withdraw","target":"书/delay"}]')
+    assert not out.startswith("失败"), out
+    assert not (kb / "资料" / "书" / "delay").exists()
+    assert keep.exists()
+    assert "已退" in out
+
+
+def test_withdraw_chapter_rejected(kb):
+    plant_book(kb)
+    from knowledge_mcp.notes import lint_notes
+
+    out = lint_notes("apply", '[{"op":"withdraw","target":"书/delay/正文"}]')
+    assert out.startswith("失败")
+    assert (kb / "资料" / "书" / "delay" / "正文.md").exists()
+
+
+def test_delete_op_on_book_still_rejected(kb):
+    plant_book(kb)
+    from knowledge_mcp.notes import lint_notes
+
+    out = lint_notes("apply", '[{"op":"delete","target":"书/delay"}]')
+    assert out.startswith("失败")
+    assert (kb / "资料" / "书" / "delay").exists()
+
+
+def test_mixed_delete_note_and_withdraw_book(kb):
+    plant_book(kb)
+    gone = plant_note(kb, "short", SHORT)
+    stay = plant_note(kb, "keep", KEEP)
+    from knowledge_mcp.notes import lint_notes
+
+    out = lint_notes(
+        "apply",
+        '[{"op":"delete","target":"笔记/short"},{"op":"withdraw","target":"书/delay"}]',
+    )
+    assert not out.startswith("失败"), out
+    assert not gone.exists()
+    assert stay.exists()
+    assert not (kb / "资料" / "书" / "delay").exists()
+
+
+def test_withdraw_missing_rejects(kb):
+    plant_book(kb)
+    from knowledge_mcp.notes import lint_notes
+
+    out = lint_notes("apply", '[{"op":"withdraw","target":"书/nope"}]')
+    assert out.startswith("失败")
+    assert (kb / "资料" / "书" / "delay").exists()
+
+
+def test_scan_flags_oversized_block(kb):
+    d = kb / "资料" / "书" / "kit"
+    d.mkdir(parents=True)
+    (d / "导读.md").write_text(
+        "---\ntitle: 合成长块\ntype: 书\nintro: 测超长。\n---\n\n# 合成长块\n",
+        encoding="utf-8",
+    )
+    (d / "01-长.md").write_text("字" * 70000, encoding="utf-8")
+    plant_book(kb)
+    from knowledge_mcp.notes import lint_notes
+
+    out = lint_notes("scan")
+    assert "kit" in out and "超长" in out
+    assert (d / "01-长.md").exists()
+
+
+def test_scan_flags_duplicate_chapter_names(kb):
+    d = kb / "资料" / "书" / "kit"
+    d.mkdir(parents=True)
+    (d / "导读.md").write_text(
+        "---\ntitle: 套装\ntype: 书\nintro: 测撞名。\n---\n\n# 套装\n",
+        encoding="utf-8",
+    )
+    for name in ("01-第一篇.md", "02-第一篇-2.md", "03-第一篇-3.md"):
+        (d / name).write_text("正文。\n", encoding="utf-8")
+    from knowledge_mcp.notes import lint_notes
+
+    out = lint_notes("scan")
+    assert "同名" in out or "撞车" in out
+
+
+def test_delete_note_invalidates_index(kb):
+    unique = "林间史专名甲"
+    plant_note(
+        kb,
+        "gone",
+        "---\ntitle: 离去\ntype: 笔记\nintro: 测失效。\n---\n\n"
+        + (unique + "。") * 20
+        + "\n",
+    )
+    from knowledge_mcp.index import invalidate
+    from knowledge_mcp.notes import lint_notes
+    from knowledge_mcp.retrieve import search
+
+    invalidate()
+    before = search(unique)
+    assert "笔记/gone" in before or "离去" in before
+    lint_notes("apply", '[{"op":"delete","target":"笔记/gone"}]')
+    after = search(unique)
+    assert "笔记/gone" not in after
+
+
+def test_scan_does_not_delete_oversized(kb):
+    d = kb / "资料" / "书" / "kit"
+    d.mkdir(parents=True)
+    (d / "导读.md").write_text(
+        "---\ntitle: 合成长块\ntype: 书\nintro: 测超长。\n---\n\n# 合成长块\n",
+        encoding="utf-8",
+    )
+    (d / "01-长.md").write_text("字" * 70000, encoding="utf-8")
+    from knowledge_mcp.notes import lint_notes
+
+    out = lint_notes("scan")
+    assert "超长" in out
+    assert (d / "01-长.md").exists()
+    assert "不删" in out or "清单" in out

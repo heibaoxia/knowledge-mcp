@@ -1,6 +1,7 @@
 """Search headers only; read named parts with a char cap."""
 from __future__ import annotations
 
+import os
 import re
 import time
 from pathlib import Path
@@ -9,10 +10,15 @@ import yaml
 
 from knowledge_mcp.errors import fail
 from knowledge_mcp.index import (
+    CANDIDATE_LIMIT,
     HAN,
     MAP_FILE,
     SKIP_FILES,
     _block_name,
+    book_is_dead,
+    core_chapter_name,
+    _share_affix,
+    evidence_pieces,
     is_nav_name,
     _df,
     _ensure,
@@ -23,11 +29,13 @@ from knowledge_mcp.index import (
     parse_query,
     search_index,
     search_maps,
+    search_vectors,
 )
 from knowledge_mcp.log import guarded, log_call
 from knowledge_mcp.paths import dirs
 
 SEARCH_LIMIT = 5
+RRF_K = 60
 CHAR_CAP = 8000
 BATCH_LIMIT = 5
 TOTAL_CHAR_CAP = 24000
@@ -244,13 +252,13 @@ def _life_literal_ok(q: str, bid: str, items: list[dict]) -> bool:
 
 
 def _long_pieces(q: str) -> list[str]:
-    """问句里 len≥3 的原片（ASCII 同长也算）。这类片才是「沾的到底是不是这条」。"""
-    return [p for p in parse_query(q) if len(p) >= 3 or re.fullmatch(r"[A-Za-z0-9_]{3,}", p)]
+    """问句里 len≥3 的证据片（ASCII 同长也算）。这类片才是「沾的到底是不是这条」。"""
+    return [p for p in evidence_pieces(q) if len(p) >= 3 or re.fullmatch(r"[A-Za-z0-9_]{3,}", p)]
 
 
 def _longest_pieces(q: str) -> list[str]:
     """问句 len≥3 原片里最长的那一档（并列同长全算）。DF=0 也当门槛：
-    只沾了公共片（len<3）的书拿不出这条证据，就不占仅字面/仅地图的格。"""
+    只沾了公共片（len<3）的书拿不出这条证据，就不占仅字面/仅语义的格。"""
     parts = _long_pieces(q)
     if not parts:
         return []
@@ -340,6 +348,41 @@ def _evidence_idents(slug: str, q: str, title: str) -> list[str]:
     return out
 
 
+def _named_in_query(name: str, q: str) -> bool:
+    n = (name or "").strip()
+    if not n or not q:
+        return False
+    if n in q:
+        return True
+    core = _strip_chap(n)
+    return bool(core) and len(core) >= 2 and core in q
+
+
+def _alias_right_idents(slug: str, q: str) -> list[str]:
+    p = dirs()["books"] / slug / MAP_FILE
+    if not p.is_file():
+        return []
+    try:
+        parsed = parse_map(p.read_text(encoding="utf-8"))
+    except OSError:
+        return []
+    out: list[str] = []
+    for line in parsed.get("aliases") or []:
+        raw = str(line)
+        sep = "→" if "→" in raw else ("->" if "->" in raw else "")
+        if not sep:
+            continue
+        left, right = raw.split(sep, 1)
+        if not _named_in_query(left.strip(), q):
+            continue
+        idents = re.findall(r"书/\S+", right)
+        for ident in idents:
+            ident = ident.strip().rstrip("。．")
+            if ident and ident not in out:
+                out.append(ident)
+    return out
+
+
 def _book_suggest(slug: str, q: str, lit_items: list[dict], mp: dict | None) -> list[str]:
     title = _book_title(slug)
     sug: list[str] = []
@@ -350,6 +393,23 @@ def _book_suggest(slug: str, q: str, lit_items: list[dict], mp: dict | None) -> 
                 if ident not in sug:
                     sug.append(ident)
         return sug[:CHAPTER_SUGGEST_LIMIT]
+    book_dir = dirs()["books"] / slug
+    if book_dir.is_dir():
+        for p in sorted(book_dir.glob("*.md")):
+            if p.name in SKIP_FILES or is_nav_name(p.name):
+                continue
+            name = _block_name(p)
+            ident = f"书/{slug}/{name}"
+            if ident not in sug and _named_in_query(name, q):
+                sug.append(ident)
+    for it in lit_items:
+        ident = it["ident"]
+        name = it.get("name") or ""
+        if ident not in sug and _named_in_query(name, q):
+            sug.append(ident)
+    for ident in _alias_right_idents(slug, q):
+        if ident not in sug:
+            sug.append(ident)
     for ident in _evidence_idents(slug, q, title):
         if ident not in sug:
             sug.append(ident)
@@ -368,6 +428,76 @@ def _book_suggest(slug: str, q: str, lit_items: list[dict], mp: dict | None) -> 
             if s not in sug:
                 sug.append(s)
     return sug[:CHAPTER_SUGGEST_LIMIT]
+
+
+def _strip_chap(name: str) -> str:
+    s = core_chapter_name(name or "")
+    s = re.sub(r"^[0-9]+\s+", "", s)
+    return s.strip()
+
+
+def _has_aboutness(bid: str, q: str, pieces: list[str]) -> bool:
+    title = _book_title(bid)
+    solves = ""
+    chaps: list[str] = []
+    book_dir = dirs()["books"] / bid
+    mp = book_dir / MAP_FILE
+    if mp.is_file():
+        try:
+            parsed = parse_map(mp.read_text(encoding="utf-8"))
+            solves = "\n".join(parsed.get("solves") or [])
+        except OSError:
+            solves = ""
+    if book_dir.is_dir():
+        for p in sorted(book_dir.glob("*.md")):
+            if p.name in SKIP_FILES or is_nav_name(p.name):
+                continue
+            chaps.append(_block_name(p))
+    blob = title + "\n" + solves
+    for p in pieces:
+        if 2 <= len(p) <= 8 and p in blob:
+            return True
+        if 3 <= len(p) <= 6:
+            for drop in (1, 2):
+                sub = p[:-drop]
+                if len(sub) >= 2 and sub in blob:
+                    return True
+        if len(p) >= 3 and any(p in n for n in chaps):
+            return True
+    for n in chaps:
+        s = _strip_chap(n)
+        if s and s in q:
+            return True
+        if s and any(len(p) >= 2 and _share_affix(p, s) for p in pieces):
+            return True
+    return False
+
+
+def _drop_dead_books(bids: list[str]) -> list[str]:
+    keep = []
+    for b in bids:
+        d = dirs()["books"] / b
+        if d.is_dir() and book_is_dead(d):
+            continue
+        keep.append(b)
+    return keep
+
+
+def _drop_no_aboutness(
+    q: str, both: list[str], lit_only: list[str], map_only: list[str]
+) -> tuple[list[str], list[str], list[str]]:
+    cands = list(dict.fromkeys(both + lit_only + map_only))
+    if not cands:
+        return both, lit_only, map_only
+    pieces = evidence_pieces(q)
+    flags = {b: _has_aboutness(b, q, pieces) for b in cands}
+    if not any(flags.values()):
+        return both, lit_only, map_only
+    return (
+        [b for b in both if flags[b]],
+        [b for b in lit_only if flags[b]],
+        [b for b in map_only if flags[b]],
+    )
 
 
 def _format_landmarks(
@@ -392,13 +522,27 @@ def _format_landmarks(
     notes = [(kind, bid) for kind, bid in lit_order if kind != "书"]
     lit_set = set(lit_books)
     longs = _longest_pieces(q)
-    map_by = {
-        bid: h
-        for bid, h in map_by.items()
-        if bid in lit_set or _map_has_piece(bid, longs)
-    }
+    long_any = _long_pieces(q)
+    if long_any:
+        map_by = {bid: h for bid, h in map_by.items() if _map_has_piece(bid, long_any)}
+    else:
+        map_by = {
+            bid: h
+            for bid, h in map_by.items()
+            if bid in lit_set or _map_has_piece(bid, long_any)
+        }
     map_order = [bid for bid in map_order if bid in map_by]
     both = [bid for bid in lit_books if bid in map_by]
+    both.sort(
+        key=lambda bid: (
+            0
+            if any(
+                _named_in_query(it.get("name") or "", q)
+                for it in lit_groups.get(("书", bid), [])
+            )
+            else 1
+        )
+    )
     lit_only = [bid for bid in lit_books if bid not in map_by]
     if life:
         lit_only = [
@@ -423,15 +567,18 @@ def _format_landmarks(
         both = [b for b in both if _quoted_ok(b)]
         lit_only = [b for b in lit_only if _quoted_ok(b)]
         map_only = [b for b in map_only if _quoted_ok(b)]
+    both = _drop_dead_books(both)
+    lit_only = _drop_dead_books(lit_only)
     lit_only = _drop_weak_literal(q, lit_only, both, lit_groups)
+    both, lit_only, map_only = _drop_no_aboutness(q, both, lit_only, map_only)
     if life:
-        rest = [("仅地图", "书", b) for b in map_only] + [
+        rest = [("仅语义", "书", b) for b in map_only] + [
             ("仅字面", "书", b) for b in lit_only
         ] + [("仅字面", k, b) for k, b in notes]
     else:
         rest = [("仅字面", "书", b) for b in lit_only] + [
             ("仅字面", k, b) for k, b in notes
-        ] + [("仅地图", "书", b) for b in map_only]
+        ] + [("仅语义", "书", b) for b in map_only]
     rows: list[tuple[str, str, str]] = [("两路都中", "书", b) for b in both] + rest
     lines = ["路标（无正文）"]
     n = 0
@@ -439,7 +586,7 @@ def _format_landmarks(
     col_label = {
         "两路都中": "两路都中（优先）：",
         "仅字面": "仅字面：",
-        "仅地图": "仅地图：",
+        "仅语义": "仅语义：",
     }
     for col, kind, bid in rows:
         n += 1
@@ -496,6 +643,45 @@ def _format_landmarks(
     )
 
 
+def _rrf_pool(lit: list[dict], vec: list[dict]) -> tuple[list[dict], list[dict]]:
+    if not vec:
+        return lit[:CANDIDATE_LIMIT], []
+    scores: dict[str, float] = {}
+    for r, h in enumerate(lit):
+        ident = str(h.get("ident") or "")
+        scores[ident] = scores.get(ident, 0.0) + 2.0 / (RRF_K + r + 1)
+    for r, h in enumerate(vec):
+        ident = str(h.get("ident") or "")
+        scores[ident] = scores.get(ident, 0.0) + 1.0 / (RRF_K + r + 1)
+    keep = {i for i, _ in sorted(scores.items(), key=lambda x: -x[1])[:CANDIDATE_LIMIT]}
+    lit2 = [h for h in lit if str(h.get("ident")) in keep]
+    vec2 = [h for h in vec if str(h.get("ident")) in keep]
+    return lit2, vec2
+
+
+def _merge_vec_into_maps(maps: list[dict], vec: list[dict]) -> list[dict]:
+    have = {str(h.get("book_id")) for h in maps}
+    out = list(maps)
+    for h in vec:
+        bid = str(h.get("book_id") or "")
+        if not bid or bid in have:
+            continue
+        kind = str(h.get("kind") or "书")
+        ident = f"书/{bid}" if kind == "书" else str(h.get("ident") or bid)
+        out.append(
+            {
+                "ident": ident,
+                "book_id": bid,
+                "kind": kind,
+                "suggest": [str(h.get("ident") or ident)],
+                "why": [],
+                "score": h.get("score"),
+            }
+        )
+        have.add(bid)
+    return out
+
+
 @guarded("kb_search")
 def search(query: str) -> str:
     q = (query or "").strip()
@@ -506,14 +692,21 @@ def search(query: str) -> str:
     t0 = time.perf_counter()
     extra: dict = {}
     try:
-        lit = search_index(q)
+        lit = search_index(q)[:CANDIDATE_LIMIT]
     except Exception:
-        lit = _header_hits(q)
+        lit = _header_hits(q)[:CANDIDATE_LIMIT]
         extra["degraded"] = 1
     try:
-        maps = search_maps(q)
+        off = os.environ.get("KNOWLEDGE_EMBED", "").strip().lower() in {"off", "0", "false"}
+        maps = [] if off else search_maps(q)
+        vec = [] if off else search_vectors(q)
     except Exception:
         maps = []
+        vec = []
+    else:
+        lit, vec = _rrf_pool(lit, vec)
+        if lit or maps:
+            maps = _merge_vec_into_maps(maps, vec)
     if not lit and not maps:
         if not latin_blocked(q) and _life_query(q):
             maps = _life_fallback(q)

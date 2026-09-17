@@ -15,17 +15,19 @@ mcp = FastMCP(
     name="knowledge",
     instructions=(
         '这是本机资料室。人点名用它时再来。'
-        '先 kb_search 拿路标（无正文，三栏：两路都中 / 仅字面 / 仅地图），再 kb_read 点名建议块。不要打开资料/灌全文。'
+        '先 kb_search 拿路标（无正文，三栏：两路都中 / 仅字面 / 仅语义），再 kb_read 点名建议块。不要打开资料/灌全文。'
         '一次最多 5 块，每块约 8000 字，整次约 24000 字。'
         '超长篇用 块名#2 续下一窗，不要通读目录。够答就停。'
-        '写笔记：preview → verify → create/update。自检不改本工具源码。'
+        '写笔记：preview → verify → create/update。'
+        '坏书走 kb_lint_notes：先 scan，再 apply withdraw 点名 书/<slug>，不要去删文件夹。'
+        '自检不改本工具源码。'
     ),
 )
 
 
 @mcp.tool
 def kb_search(query: str = "", q: str = "") -> str:
-    """检索资料室。输入你想了解什么。只回路标（含建议块），无正文。两路都跑，路标三栏：两路都中 / 仅字面 / 仅地图。书和笔记一起搜。先检索再点名阅读；够答就停，不要按目录把每章都读完。"""
+    """检索资料室。输入你想了解什么。只回路标（含建议块），无正文。两路都跑，路标三栏：两路都中 / 仅字面 / 仅语义。书和笔记一起搜。先检索再点名阅读；够答就停，不要按目录把每章都读完。"""
     return retrieve_search(query or q)
 
 
@@ -63,7 +65,7 @@ def kb_write_note(
 
 @mcp.tool
 def kb_lint_notes(action: str = "scan", plan: Optional[str] = None) -> str:
-    """净化笔记和地图。先 scan 出清单，再 apply 提交处理。只动笔记和地图，动书正文会拒绝。"""
+    """净化笔记、地图；scan 含书的未入完。先 scan 出清单，再 apply。笔记可删改合并；地图可改/标过期；整本可 withdraw（target=书/<slug>）。动某一章会拒绝。"""
     return lint_notes(action, plan)
 
 
