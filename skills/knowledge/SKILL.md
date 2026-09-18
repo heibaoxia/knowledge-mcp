@@ -22,7 +22,7 @@ description: 本机资料室。用户说「用知识库」「查库里的书」�
 
 ## 其它门（人点名才用）
 
-- 丢书：人把 PDF/EPUB/MOBI 放进 `原始资料/`，再 `kb_ingest_inbox` 或 `kb_ingest_files`。缺地图时按回报编地图，走 `kb_lint_notes apply`。
+- 丢书：人把 PDF/EPUB/MOBI 放进 `原始资料/`，再 `kb_ingest_inbox` 或 `kb_ingest_files`。入库会写骨架地图。随后把「能解决什么」改成读者问法、补俗称别名，走 `kb_lint_notes apply`。
 - 写笔记：`preview` → `verify` → `create`/`update`。说相符必须先成功 `kb_read` 过依据。
 - 退书：`kb_lint_notes` 先 scan，再 apply `withdraw`，点名 `书/<slug>`。不要删某一章。
 

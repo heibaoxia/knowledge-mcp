@@ -19,7 +19,8 @@
 2. **再 `kb_read` 点名** `书/<slug>/<章>` 或 `笔记/<slug>`。一次最多 5 块，单窗 8000，整次 24000。超长用 `章名#2`。
 3. 够答就停。不要按目录通读，不要打开 `资料/` 灌全文。
 4. 写笔记：`preview` → `verify` → `create`/`update`。声称相符必须先成功读过依据。
-5. 退书：`kb_lint_notes` 先 scan，再 apply `withdraw` 点名 `书/<slug>`。不要删文件夹、不要删某一章。
+5. 入库会写骨架地图。随后把「能解决什么」改成读者问法、补俗称别名，走 `kb_lint_notes apply`。
+6. 退书：`kb_lint_notes` 先 scan，再 apply `withdraw` 点名 `书/<slug>`。不要删文件夹、不要删某一章。
 
 ## 不要做
 

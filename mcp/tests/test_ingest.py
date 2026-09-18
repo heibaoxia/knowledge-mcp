@@ -368,16 +368,23 @@ def test_guide_comes_from_headings_not_llm(kb, monkeypatch):
     assert "LLM" not in text
 
 
-def test_inbox_reports_missing_map(kb, monkeypatch):
+def test_inbox_writes_skeleton_map(kb, monkeypatch):
     _patch_convert(monkeypatch)
     drop_source(kb, "delay.epub")
+    from knowledge_mcp.index import map_problems
     from knowledge_mcp.ingest import ingest_inbox
 
     out = ingest_inbox()
     assert not out.startswith("失败")
-    assert "缺地图" in out
-    slugs = list((kb / "资料" / "书").iterdir())
-    assert slugs and not (slugs[0] / "地图.md").is_file()
+    slugs = [p for p in (kb / "资料" / "书").iterdir() if p.is_dir()]
+    assert slugs
+    mp = slugs[0] / "地图.md"
+    assert mp.is_file()
+    assert map_problems(slugs[0]) == []
+    text = mp.read_text(encoding="utf-8")
+    assert "能解决什么" in text
+    assert "章名" in text
+    assert "缺地图" not in out
 
 
 def test_convert_one_calls_invalidate(kb, monkeypatch):
