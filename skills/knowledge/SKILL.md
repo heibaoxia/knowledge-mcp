@@ -1,11 +1,11 @@
 ---
-name: 知识库
+name: knowledge
 description: 本机资料室。用户说「用知识库」「查库里的书」「资料室」、要按自己的书回答、或往库里丢 PDF/EPUB 时使用。先 kb_search 再 kb_read。没点名不要调 kb_*。
 ---
 
 # 知识库
 
-闸门是本机 MCP `knowledge`（工具名 `kb_*`），不是这篇说明书。
+闸门是本机 MCP `knowledge`（工具名 `kb_*`），不是这篇说明书。机器 id：`knowledge`。
 
 ## 何时开门
 

@@ -1,5 +1,7 @@
 # Skill：知识库（资料室）
 
+机器 id：`knowledge`（文件夹 `skills/knowledge/`）。对人仍叫知识库。
+
 > 给人点名启用。闸门在 MCP，不在本文。  
 > 上级：`需求.md`。
 
