@@ -10,14 +10,16 @@ BOOKS = [
     "book-2cde2fad",
     "19-psychology-and-life-richard-gerrig-etc",
     "1-7",
+    "book-419c3021",
+    "book-d2c01296",
+    "book-6a85baa6",
 ]
 
 
 @pytest.mark.parametrize("slug", BOOKS)
 def test_real_book_map_ok(slug):
+    # 3.1：章名已机械补齐，不合格就是真不合格——不再豁免「章名覆盖不足」
     d = repo_root() / "资料" / "书" / slug
     if not d.is_dir():
         pytest.skip("no book")
-    probs = map_problems(d)
-    hard = [p for p in probs if "章名" not in p]
-    assert hard == []
+    assert map_problems(d) == []

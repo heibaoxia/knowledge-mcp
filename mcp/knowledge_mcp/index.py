@@ -271,16 +271,18 @@ def _fill_vectors(items: list[tuple[str, str]]) -> None:
                 _cache_put(ident, digest, vec)
 
 
-def _map_bits_for(ident: str, parsed: dict | None) -> str:
+def _map_bits_for(ident: str, parsed: dict | None, evidence: bool = True) -> str:
+    """指向这一块的地图词。evidence=False 时只取「别名」段，不带「依据块」的能解决句。"""
     if not parsed:
         return ""
     bits: list[str] = []
     for line in parsed.get("aliases") or []:
         if ident in line:
             bits.append(_alias_left(line))
-    for line in parsed.get("evidence") or []:
-        if ident in line:
-            bits.append(_alias_left(line))
+    if evidence:
+        for line in parsed.get("evidence") or []:
+            if ident in line:
+                bits.append(_alias_left(line))
     return " ".join(bits)
 
 
@@ -383,16 +385,29 @@ def _longest_existing_prefix(con: sqlite3.Connection, piece: str) -> str:
     return piece
 
 
-def _overlap2(q: str, left: str) -> bool:
-    if not q or not left or len(left) < 2:
+def _expand_ok(piece: str, term: str, n: int = 3) -> bool:
+    """扩写闸：term 已在片里；或片 ≥n 字且整条在 term 里；或两者有 ≥n 字连续重合。
+
+    只共用一个 2 字通用词（不是专名）的不算——别名一多，这种词就成了通往无关全书的 OR 入口。
+    """
+    if not piece or not term or len(term) < 2:
         return False
-    if left in q:
+    if term in piece and len(term) >= 3:
         return True
-    return any(left[i : i + 2] in q for i in range(len(left) - 1))
+    if len(piece) >= n and piece in term:
+        return True
+    if len(piece) < n or len(term) < n:
+        return False
+    grams = {term[i : i + n] for i in range(len(term) - n + 1)}
+    return any(piece[i : i + n] in grams for i in range(len(piece) - n + 1))
 
 
 def _share_affix(piece: str, core: str) -> bool:
-    """问句片与章名：整核在片里，或较长片与较短章名共享前后缀。"""
+    """问句片与章名：整核在片里，或较长片与较短章名共享中心语（后缀 ≥2 字）。
+
+    中文复合词的中心语在后：同后缀算同类；只共用一个 2 字词头的，多半是把两个不同的词
+    串在一起，会把无关书拉进来——前缀要 ≥3 字才算。
+    """
     if len(piece) < 2 or len(core) < 2:
         return False
     if core in piece:
@@ -402,19 +417,22 @@ def _share_affix(piece: str, core: str) -> bool:
     if len(piece) >= 4 and 2 <= len(core) <= len(piece):
         nmax = min(len(core), 4)
         for n in range(nmax, 1, -1):
-            if piece[-n:] == core[-n:] or piece[:n] == core[:n]:
+            if piece[-n:] == core[-n:]:
+                return True
+            if n >= 3 and piece[:n] == core[:n]:
                 return True
     return False
 
 
 def _expand_struct_terms(q: str) -> list[str]:
-    """别名左串按 ≥2 字重叠扩；章名只在问句出现或与原片前后缀相关时扩。"""
+    """别名/章名扩写：只在与原片（不是整句）有专名级重合时扩，每本每段最多 per_book 条。"""
     out: list[str] = []
     books = dirs()["books"]
     if not books.is_dir():
         return out
     pieces = [_strip_fun_tail(p) for p in parse_query(q)]
     pieces = [p for p in pieces if len(p) >= 2]
+    per_book = 4
 
     def add(term: str) -> None:
         t = (term or "").strip()
@@ -426,10 +444,16 @@ def _expand_struct_terms(q: str) -> list[str]:
             parsed = parse_map(mp.read_text(encoding="utf-8"))
         except OSError:
             continue
+        mark = len(out)
         for left in parsed.get("alias_lefts") or []:
-            if _overlap2(q, left):
+            if len(out) - mark >= per_book:
+                break
+            if any(_expand_ok(p, left) for p in pieces):
                 add(left)
+        mark = len(out)
         for ch in parsed.get("chapters") or []:
+            if len(out) - mark >= per_book:
+                break
             core = core_chapter_name(ch) or ch
             if core in q or ch in q or any(_share_affix(p, core) for p in pieces):
                 add(core)
@@ -751,13 +775,17 @@ def map_problems(book_dir: Path) -> list[str]:
 
 
 def map_index_text(text: str) -> str:
+    """地图进索引的正文：内容段 + 别名，不含「章名」段。
+
+    章名段是整本书的目录；目录类文本不进字面索引（见需求 4.1）。每个章名本来就在
+    它自己那一块的 name 列里（同样权重），再整本铺一遍只会让任意章名变成全书级的通行证。
+    """
     parsed = parse_map(text)
     return "\n".join(
         x
         for x in (
             parsed.get("solves_body") or "",
             parsed.get("suggest_body") or "",
-            parsed.get("chapter_body") or "",
             "\n".join(parsed.get("alias_lefts") or []),
             parsed.get("topic_body") or "",
         )
@@ -833,8 +861,7 @@ def _ensure() -> sqlite3.Connection:
                 if map_raw:
                     parsed = parse_map(map_raw)
                     alias_src = " ".join(
-                        (parsed.get("chapters") or [])
-                        + (parsed.get("alias_lefts") or [])
+                        (parsed.get("alias_lefts") or [])
                         + (parsed.get("topics") or [])
                     )
             for p in sorted(guide.parent.glob("*.md")):
@@ -850,8 +877,9 @@ def _ensure() -> sqlite3.Connection:
                 body = "" if nav or shell else raw
                 name_ix = "" if nav or shell else name
                 title_ix = "" if dead else title
-                alias_ix = "" if nav or shell else alias_src
                 ident = f"书/{slug}/{name}"
+                # 别名只增强它指向的那一块（不带依据块的能解决句，那条走地图列）；整本清单不再铺到每一块
+                alias_ix = "" if nav or shell else _map_bits_for(ident, parsed, evidence=False)
                 con.execute(
                     "INSERT INTO docs VALUES (?,?,?,?,?,?,?,?)",
                     (

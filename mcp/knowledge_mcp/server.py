@@ -43,13 +43,13 @@ def kb_read(
 
 @mcp.tool
 def kb_ingest_inbox() -> str:
-    """收件箱入库：把「原始资料」文件夹里现有的 PDF/EPUB/MOBI 全部转换成书。"""
+    """收件箱入库：把「原始资料」文件夹里现有的 PDF/EPUB/MOBI 全部转换成书。入库后每本书要有合格地图才算入完；缺地图时回报里会给「编地图」工作单，编好走 kb_lint_notes apply（地图不存在也能 update 新建）。"""
     return ingest_inbox()
 
 
 @mcp.tool
 def kb_ingest_files(paths: list[str]) -> str:
-    """指定入库：只转换这些源文件路径。指定的是文件，不是书名。找不到文件不要编书。"""
+    """指定入库：只转换这些源文件路径。指定的是文件，不是书名。找不到文件不要编书。入库后同样要有合格地图；缺地图时照回报里的工作单编，走 kb_lint_notes apply。"""
     return ingest_named(paths)
 
 
@@ -65,7 +65,7 @@ def kb_write_note(
 
 @mcp.tool
 def kb_lint_notes(action: str = "scan", plan: Optional[str] = None) -> str:
-    """净化笔记、地图；scan 含书的未入完。先 scan 出清单，再 apply。笔记可删改合并；地图可改/标过期；整本可 withdraw（target=书/<slug>）。动某一章会拒绝。"""
+    """净化笔记、地图；scan 含书的未入完。先 scan 出清单，再 apply。笔记可删改合并；地图可改/标过期，**地图没有也能 update 新建**（target=书/<slug>/地图）；整本可 withdraw（target=书/<slug>）。动某一章会拒绝。"""
     return lint_notes(action, plan)
 
 
