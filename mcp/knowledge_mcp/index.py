@@ -380,7 +380,7 @@ EXPAND_BAN = ALIAS_BAN | {"怎么", "什么"}
 def _longest_existing_prefix(con: sqlite3.Connection, piece: str) -> str:
     if len(piece) < 3 or _df(con, piece) > 0:
         return piece
-    for n in range(len(piece) - 1, 1, -1):
+    for n in range(len(piece) - 1, 2, -1):
         s = piece[:n]
         if _df(con, s) > 0:
             return s
@@ -394,13 +394,12 @@ def maximal_pieces(pieces: list[str]) -> list[str]:
 
 
 def _expand_ok(piece: str, term: str, n: int = 3) -> bool:
-    """扩写闸：只认整串包含。term 在片里（≥3），或片（≥n）整条在 term 里。
-
-    两个更长专名共享一段滑动 N 字不算——那会把无关书的别名 OR 进问句。
-    """
+    """扩写闸：整串包含；2 字别名只允许落在片头（林潮事件 ← 林潮，不是 …心理学）。"""
     if not piece or not term or len(term) < 2:
         return False
     if term in piece and len(term) >= 3:
+        return True
+    if len(term) == 2 and piece.startswith(term):
         return True
     return len(piece) >= n and piece in term
 
@@ -994,9 +993,29 @@ def _df(con: sqlite3.Connection, piece: str, kind: str | None = None) -> int:
             return 0
 
 
+def _han_term_missing(con: sqlite3.Connection, q: str, kind: str | None = None) -> bool:
+    """问句带拉丁时：≥4 字汉文原片全库没有、又没有 ≥3 字汉文真命中 → 拉丁同形不得顶。"""
+    parts = [_strip_fun_tail(p) for p in parse_query(q) if p]
+    if not any(re.fullmatch(r"[A-Za-z0-9_]+", p) for p in parts):
+        return False
+    miss4 = False
+    hit3 = False
+    for p in parts:
+        if re.fullmatch(r"[A-Za-z0-9_]+", p) or not HAN.search(p):
+            continue
+        d = _df(con, p, kind)
+        if len(p) >= 4 and d == 0:
+            miss4 = True
+        if len(p) >= 3 and d > 0:
+            hit3 = True
+    return miss4 and not hit3
+
+
 def _match_gate(
     con: sqlite3.Connection, q: str, kind: str | None = None
 ) -> tuple[str, str, list[str]] | None:
+    if _han_term_missing(con, q, kind):
+        return None
     parts = evidence_pieces(q)
     expr = query_match(q)
     if not expr:

@@ -350,6 +350,54 @@ def test_t14_alias_shared_tail_does_not_raise_idle(kb):
     assert _mark("书/tongshi") not in out
 
 
+def test_t15_two_char_alias_prefix_expands(kb):
+    """2 字别名落在问句片头时能扩；闲书只重复这 2 字进不了。"""
+    plant_book(kb, "linchao", "林潮纪要", ["后事"], ["林潮事件以后诸事重新排队。"])
+    plant_map(
+        kb,
+        "linchao",
+        "林潮纪要",
+        "后事",
+        solves=["林潮以后怎么排", "后事怎么记", "潮势怎么算"],
+        chapter_names=["后事"],
+        aliases=["林潮 → 书/linchao/后事"],
+    )
+    plant_book(kb, "xianchao", "闲潮札记", ["卷一"], ["林潮。" * 80])
+    plant_map(
+        kb,
+        "xianchao",
+        "闲潮札记",
+        "卷一",
+        solves=["杂事怎么记", "旧账怎么翻", "循环怎么算"],
+    )
+    out = _search("林潮事件以后呢")
+    assert _mark("书/linchao") in out
+    assert _mark("书/xianchao") not in out
+    assert "重新排队" not in out
+
+
+def test_t16_missing_han_term_blocks_latin_homograph(kb):
+    """汉文技术词全库没有时，文献作者拉丁姓不得单独顶路标。"""
+    plant_book(
+        kb,
+        "shengzhan",
+        "生展讲义",
+        ["总论"],
+        ["资料来源：Quel, J., Zervoulis, K. Child Development.\n循环。" * 20],
+    )
+    plant_map(
+        kb,
+        "shengzhan",
+        "生展讲义",
+        "总论",
+        solves=["人格怎么形成", "课堂怎么上", "旧账怎么翻"],
+    )
+    out = _search("怎么用 Quel 写一个操作系统")
+    assert _mark("书/shengzhan") not in out
+    assert "没有像的" in out or "0" in out
+    assert "循环" not in out
+
+
 def test_t12_delete_cache_rebuilds(kb):
     plant_book(kb, "hechao", "核潮讲义", ["核潮分层"], ["分层讲完就到此为止。"])
     plant_book(kb, "xianbian", "闲编纪事", ["卷一 杂记"], ["变化。" * 200])
