@@ -301,6 +301,55 @@ def test_t10_fake_embed_does_not_drop_alias_hit(kb):
     assert "重新排队" not in out
 
 
+def test_t13_map_solves_generic_verb_does_not_raise_idle(kb):
+    """闲书「能解决什么」只共享问句里的高频二字动词，不得进路标。"""
+    plant_book(kb, "hechao", "核潮讲义", ["核潮分层"], ["核潮是怎么形成的，分层以后怎么收。"])
+    plant_map(
+        kb, "hechao", "核潮讲义", "核潮分层",
+        solves=["核潮分层以后局势", "潮势怎么算", "分层怎么记"],
+        chapter_names=["核潮分层"],
+    )
+    plant_book(kb, "xianli", "闲利札记", ["卷一"], ["平均利润和生产价格正文。" + "循环。" * 80])
+    plant_map(
+        kb, "xianli", "闲利札记", "卷一",
+        solves=["平均利润和生产价格是怎么形成的", "循环怎么记", "旧账怎么翻"],
+    )
+    out = _search("核潮是怎么形成的")
+    assert _mark("书/hechao") in out
+    assert _mark("书/xianli") not in out
+    assert "平均利润" not in out
+
+
+def test_t14_alias_shared_tail_does_not_raise_idle(kb):
+    """两个更长专名只共享词尾时，闲书别名不得扩进问句。"""
+    plant_book(
+        kb, "queersen", "奎尔森札记", ["自卑章"],
+        ["自卑感、人际关系和勇气在奎尔森心理学里怎么串。"],
+    )
+    plant_map(
+        kb, "queersen", "奎尔森札记", "自卑章",
+        solves=["自卑感是怎么来的", "勇气怎么用", "人际关系怎么办"],
+        chapter_names=["自卑章"],
+        aliases=["奎尔森心理学 → 书/queersen/自卑章"],
+    )
+    plant_book(
+        kb, "tongshi", "通识讲义", ["总论"],
+        ["健康心理学和社会心理学课堂。人际关系练习很多。"],
+    )
+    plant_map(
+        kb, "tongshi", "通识讲义", "总论",
+        solves=["课堂怎么上", "通识怎么记", "旧账怎么翻"],
+        chapter_names=["总论"],
+        aliases=[
+            "健康心理学 → 书/tongshi/总论",
+            "进化心理学 → 书/tongshi/总论",
+        ],
+    )
+    out = _search("奎尔森心理学里自卑感、人际关系和勇气是怎么串起来的")
+    assert _mark("书/queersen") in out
+    assert _mark("书/tongshi") not in out
+
+
 def test_t12_delete_cache_rebuilds(kb):
     plant_book(kb, "hechao", "核潮讲义", ["核潮分层"], ["分层讲完就到此为止。"])
     plant_book(kb, "xianbian", "闲编纪事", ["卷一 杂记"], ["变化。" * 200])

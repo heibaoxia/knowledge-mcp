@@ -18,7 +18,7 @@ from knowledge_mcp.index import (
     book_is_dead,
     core_chapter_name,
     _share_affix,
-    evidence_pieces,
+    query_evidence_keys,
     is_nav_name,
     _df,
     _ensure,
@@ -252,24 +252,29 @@ def _life_literal_ok(q: str, bid: str, items: list[dict]) -> bool:
 
 
 def _long_pieces(q: str) -> list[str]:
-    """问句里 len≥3 的证据片（ASCII 同长也算）。这类片才是「沾的到底是不是这条」。"""
-    return [p for p in evidence_pieces(q) if len(p) >= 3 or re.fullmatch(r"[A-Za-z0-9_]{3,}", p)]
+    """仅字面最长档：原片 + 整串包含扩写里 len≥3 的。"""
+    from knowledge_mcp.index import evidence_pieces
+
+    return [
+        p
+        for p in evidence_pieces(q)
+        if len(p) >= 3 or re.fullmatch(r"[A-Za-z0-9_]{3,}", p)
+    ]
 
 
 def _longest_pieces(q: str) -> list[str]:
-    """问句 len≥3 原片里最长的那一档（并列同长全算）。DF=0 也当门槛：
-    只沾了公共片（len<3）的书拿不出这条证据，就不占仅字面/仅语义的格。"""
+    """仅字面门槛：有 len≥3 用最长档（含整串包含扩写）；没有则用 DF 最低的二字片。"""
     parts = _long_pieces(q)
-    if not parts:
-        return []
-    top = max(len(p) for p in parts)
-    return [p for p in parts if len(p) == top]
+    if parts:
+        top = max(len(p) for p in parts)
+        return [p for p in parts if len(p) == top]
+    return query_evidence_keys(q)
 
 
 def _map_has_piece(bid: str, longs: list[str]) -> bool:
-    """本地图正文（能解决什么 + 建议从哪读）有没有问句的最长原片。"""
+    """本地图正文有没有问句证据片。空证据不放行。"""
     if not longs:
-        return True
+        return False
     p = dirs()["books"] / bid / MAP_FILE
     if not p.is_file():
         return False
@@ -438,30 +443,24 @@ def _strip_chap(name: str) -> str:
 
 def _has_aboutness(bid: str, q: str, pieces: list[str]) -> bool:
     title = _book_title(bid)
-    solves = ""
     chaps: list[str] = []
     book_dir = dirs()["books"] / bid
     mp = book_dir / MAP_FILE
+    mp_text = ""
     if mp.is_file():
         try:
-            parsed = parse_map(mp.read_text(encoding="utf-8"))
-            solves = "\n".join(parsed.get("solves") or [])
+            mp_text = map_index_text(mp.read_text(encoding="utf-8"))
         except OSError:
-            solves = ""
+            mp_text = ""
     if book_dir.is_dir():
         for p in sorted(book_dir.glob("*.md")):
             if p.name in SKIP_FILES or is_nav_name(p.name):
                 continue
             chaps.append(_block_name(p))
-    blob = title + "\n" + solves
+    blob = title + "\n" + mp_text
     for p in pieces:
-        if 2 <= len(p) <= 8 and p in blob:
+        if len(p) >= 2 and p in blob:
             return True
-        if 3 <= len(p) <= 6:
-            for drop in (1, 2):
-                sub = p[:-drop]
-                if len(sub) >= 2 and sub in blob:
-                    return True
         if len(p) >= 3 and any(p in n for n in chaps):
             return True
     for n in chaps:
@@ -489,7 +488,7 @@ def _drop_no_aboutness(
     cands = list(dict.fromkeys(both + lit_only + map_only))
     if not cands:
         return both, lit_only, map_only
-    pieces = evidence_pieces(q)
+    pieces = query_evidence_keys(q)
     flags = {b: _has_aboutness(b, q, pieces) for b in cands}
     if not any(flags.values()):
         return both, lit_only, map_only
@@ -520,17 +519,8 @@ def _format_landmarks(
             map_order.append(bid)
     lit_books = [bid for kind, bid in lit_order if kind == "书"]
     notes = [(kind, bid) for kind, bid in lit_order if kind != "书"]
-    lit_set = set(lit_books)
-    longs = _longest_pieces(q)
-    long_any = _long_pieces(q)
-    if long_any:
-        map_by = {bid: h for bid, h in map_by.items() if _map_has_piece(bid, long_any)}
-    else:
-        map_by = {
-            bid: h
-            for bid, h in map_by.items()
-            if bid in lit_set or _map_has_piece(bid, long_any)
-        }
+    keys = query_evidence_keys(q)
+    map_by = {bid: h for bid, h in map_by.items() if _map_has_piece(bid, keys)}
     map_order = [bid for bid in map_order if bid in map_by]
     both = [bid for bid in lit_books if bid in map_by]
     both.sort(

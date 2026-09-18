@@ -31,7 +31,7 @@ MAP_FILE = "地图.md"
 SKIP_FILES = frozenset({"导读.md", MAP_FILE})
 IDENT_IN_LINE = re.compile(r"(?:书|笔记)/\S.*")
 CHAP_PREFIX = re.compile(r"^第[零一二三四五六七八九十百千0-9]+[章节卷]\s*")
-ALIAS_BAN = frozenset({"变化", "发生", "怎么回事", "一回事"})
+ALIAS_BAN = frozenset({"变化", "发生", "形成", "怎么回事", "一回事"})
 
 _con: sqlite3.Connection | None = None
 _root: str | None = None
@@ -351,6 +351,8 @@ def _strip_fun_tail(piece: str) -> str:
     s = piece
     while len(s) >= 2 and s[-1] in FUN_CHARS:
         s = s[:-1]
+    if len(s) >= 4 and s[-1] in "说里" and len(s) - 1 >= 3:
+        s = s[:-1]
     return s
 
 
@@ -385,21 +387,22 @@ def _longest_existing_prefix(con: sqlite3.Connection, piece: str) -> str:
     return piece
 
 
-def _expand_ok(piece: str, term: str, n: int = 3) -> bool:
-    """扩写闸：term 已在片里；或片 ≥n 字且整条在 term 里；或两者有 ≥n 字连续重合。
+def maximal_pieces(pieces: list[str]) -> list[str]:
+    """去掉被其它片当连续子串包含的短片。"""
+    ps = [p for p in pieces if p]
+    return [p for p in ps if not any(p != q and p in q for q in ps)]
 
-    只共用一个 2 字通用词（不是专名）的不算——别名一多，这种词就成了通往无关全书的 OR 入口。
+
+def _expand_ok(piece: str, term: str, n: int = 3) -> bool:
+    """扩写闸：只认整串包含。term 在片里（≥3），或片（≥n）整条在 term 里。
+
+    两个更长专名共享一段滑动 N 字不算——那会把无关书的别名 OR 进问句。
     """
     if not piece or not term or len(term) < 2:
         return False
     if term in piece and len(term) >= 3:
         return True
-    if len(piece) >= n and piece in term:
-        return True
-    if len(piece) < n or len(term) < n:
-        return False
-    grams = {term[i : i + n] for i in range(len(term) - n + 1)}
-    return any(piece[i : i + n] in grams for i in range(len(piece) - n + 1))
+    return len(piece) >= n and piece in term
 
 
 def _share_affix(piece: str, core: str) -> bool:
@@ -430,8 +433,7 @@ def _expand_struct_terms(q: str) -> list[str]:
     books = dirs()["books"]
     if not books.is_dir():
         return out
-    pieces = [_strip_fun_tail(p) for p in parse_query(q)]
-    pieces = [p for p in pieces if len(p) >= 2]
+    pieces = maximal_pieces([_strip_fun_tail(p) for p in parse_query(q) if len(p) >= 2])
     per_book = 4
 
     def add(term: str) -> None:
@@ -486,8 +488,29 @@ def _base_pieces(q: str) -> list[str]:
     return out
 
 
+def query_evidence_keys(q: str) -> list[str]:
+    """仅字面门槛用的键：极大原片里 len≥3 的；没有则 DF 最低的二字片。
+
+    不含别名/章名扩写。
+    """
+    base = [p for p in maximal_pieces(_base_pieces(q)) if p not in ALIAS_BAN]
+    longs = [
+        p
+        for p in base
+        if len(p) >= 3 or re.fullmatch(r"[A-Za-z0-9_]{3,}", p)
+    ]
+    if longs:
+        return longs
+    twos = [p for p in base if len(p) == 2]
+    if not twos:
+        return []
+    con = _ensure()
+    twos.sort(key=lambda p: (_df(con, p), p))
+    return [twos[0]]
+
+
 def evidence_pieces(q: str) -> list[str]:
-    """原片（剥前缀）+ 别名/章名扩写。扩写不进最长片闸。"""
+    """原片（剥前缀）+ 别名/章名扩写。扩写只进 FTS 召回，不进 query_evidence_keys。"""
     out = _base_pieces(q)
     for extra in _expand_struct_terms(q):
         if extra not in out:
