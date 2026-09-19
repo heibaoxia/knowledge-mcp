@@ -69,7 +69,7 @@ Claude Desktop / Cursor / 其它 MCP 客户端，配置形状如下（按客户�
 | `kb_ingest_inbox` | 收件箱里全部 PDF/EPUB/MOBI。写六段骨架地图；薄地图未入完，回报附编地图工作单 |
 | `kb_ingest_files` | 只转给出的**文件路径**，不是书名。同样要加厚才算入完 |
 | `kb_write_note` | 先 `action=preview`（含冲突段候选），再 `verify`（相符 / 部分不符 / 库中无 / 非事实），再 `create` / `update`。相符 / 部分不符必须先成功 `kb_read` 过 `sources`。写入补短地图、覆盖同名标题段 |
-| `kb_lint_notes` | 先 `scan`（含骨架未加厚），再 `apply`；地图可 update 新建；整本 `withdraw` 点名 `书/<slug>`；碰某一章整单拒绝 |
+| `kb_lint_notes` | `scan` 先在架再问题；`apply`：笔记删改合并，地图 update 可新建，`replace` 改错字，整本 `withdraw`；delete 某一章拒绝 |
 | `kb_inspect` | 最近调用/失败；`proposal` 只写入 `检修/提案/` |
 
 人把书丢进 `原始资料/`，对 Agent 说用这个库即可。不要让 Agent 直接打开 `资料/` 灌全文。

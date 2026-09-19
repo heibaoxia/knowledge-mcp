@@ -124,7 +124,6 @@ def book_health(book_dir: Path) -> list[str]:
     bodies: list[str] = []
     shorts: list[str] = []
     rare_names = 0
-    long_hit = False
     for p in book_dir.glob("*.md"):
         if p.name in ("导读.md", MAP_FILE):
             continue
@@ -134,7 +133,10 @@ def book_health(book_dir: Path) -> list[str]:
             continue
         bodies.append(text)
         if len(text) > LONG_BLOCK:
-            long_hit = True
+            nwin = max(1, (len(text) + WINDOW - 1) // WINDOW)
+            flags.append(
+                f"超长块《{_short_block_name(p.stem)}》约 {nwin} 窗"
+            )
         shorts.append(_short_block_name(p.stem))
         if "\ufffd" in p.name:
             rare_names += 2
@@ -144,8 +146,6 @@ def book_health(book_dir: Path) -> list[str]:
                 for ch in p.name
                 if (0x3400 <= ord(ch) <= 0x4DBF) or ord(ch) >= 0x20000
             )
-    if long_hit:
-        flags.append("超长块")
     counts: dict[str, int] = {}
     for n in shorts:
         counts[n] = counts.get(n, 0) + 1
@@ -736,6 +736,19 @@ def convert_one(src: Path) -> dict:
 
 WORK_ORDER_SHOWN = 30
 
+INGEST_PLAYBOOK = (
+    "操作流程\n"
+    "代码已做：转 Markdown、按篇切块、写导读、写六段骨架地图、源文件归档、索引失效。\n"
+    "代码不做：俗称别名、读者问法、邻书「不解决什么」、建议从哪读的取舍、改错字。\n"
+    "你必做（入完前）：\n"
+    "1. 按工作单把「能解决什么」改成读者问法、补 ≥3 条别名；"
+    "kb_lint_notes apply update 书/<slug>/地图\n"
+    "2. kb_lint_notes scan：该书不再报骨架未加厚\n"
+    "3. scan 若报超长块 / 乱码 / 字形可疑：replace 修，或 withdraw 退整本\n"
+    "4. kb_search 抽书里一个专名，路标里要有这本书\n"
+    "怎样算入完：地图合格且已加厚，且无机械体检项。\n"
+)
+
 
 def _map_work_order(item: dict) -> str:
     """地图不厚时交还给 Agent 的「编地图」工作单：写哪、加厚成什么样、走哪扇门。"""
@@ -793,7 +806,11 @@ def ingest_sources(files: list[Path], step_prefix: str) -> str:
         if reasons:
             unfinished.append(f"未入完 书/{item['slug']}：{'；'.join(reasons)}")
     if not failed:
-        out = f"入库完成\n成功 {len(ok)} 本\n" + "\n".join(lines) + "\n"
+        out = (
+            f"入库完成\n{INGEST_PLAYBOOK}\n成功 {len(ok)} 本\n"
+            + "\n".join(lines)
+            + "\n"
+        )
         if need_work_order:
             out += f"\n地图要加厚 {len(need_work_order)} 本（源文件已归档，不算入完）：\n"
             for item in need_work_order:

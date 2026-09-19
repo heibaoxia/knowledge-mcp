@@ -344,6 +344,12 @@ def test_create_invalidates_index(kb):
     assert "路标" in out
 
 
+def test_create_says_same_retrieve_as_books(kb):
+    out = _commit(draft("非事实"))
+    assert "检索与书同一套" in out
+    assert "求证" in out
+
+
 def test_create_appends_note_map_skeleton(kb):
     _commit(draft("非事实"))
     text = notes_of(kb)[0].read_text(encoding="utf-8")

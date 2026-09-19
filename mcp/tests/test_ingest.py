@@ -404,6 +404,14 @@ def _ingest_thin_book(kb, monkeypatch):
     return out, d
 
 
+def test_inbox_returns_agent_playbook(kb, monkeypatch):
+    out, _d = _ingest_thin_book(kb, monkeypatch)
+    assert "操作流程" in out
+    assert "代码已做" in out
+    assert "你必做" in out
+    assert "代码不做" in out
+
+
 def test_inbox_skeleton_map_has_alias_section_but_is_thin(kb, monkeypatch):
     from knowledge_mcp.index import map_problems, map_thin
 

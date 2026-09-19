@@ -314,6 +314,85 @@ def test_apply_bad_new_map_leaves_no_file(kb):
     assert not (d / "地图.md").exists()
 
 
+def test_scan_lists_shelf_even_when_clean(kb):
+    plant_book(kb)
+    from knowledge_mcp.notes import lint_notes
+
+    out = lint_notes("scan")
+    assert "在架" in out
+    assert "拖延心理学" in out
+    assert "书/delay" in out
+    assert "书 1 本" in out
+
+
+def test_replace_whole_book_and_not_delete_chapter(kb):
+    plant_book(kb)
+    d = kb / "资料" / "书" / "delay"
+    (d / "正文.md").write_text("癿癿癿 原书不可改。\n", encoding="utf-8")
+    (d / "旁.md").write_text("癿 旁块。\n", encoding="utf-8")
+    import json
+    from knowledge_mcp.notes import lint_notes
+
+    out = lint_notes(
+        "apply",
+        json.dumps(
+            [{"op": "replace", "target": "书/delay", "find": "癿", "repl": "的"}],
+            ensure_ascii=False,
+        ),
+    )
+    assert not out.startswith("失败"), out
+    assert "的的的" in (d / "正文.md").read_text(encoding="utf-8")
+    assert "癿" not in (d / "旁.md").read_text(encoding="utf-8")
+    gone = lint_notes("apply", '[{"op":"delete","target":"书/delay/正文"}]')
+    assert gone.startswith("失败")
+    assert (d / "正文.md").exists()
+
+
+def test_replace_one_chapter_leaves_other(kb):
+    plant_book(kb)
+    d = kb / "资料" / "书" / "delay"
+    (d / "正文.md").write_text("癿 只改这块。\n", encoding="utf-8")
+    (d / "旁.md").write_text("癿 别动。\n", encoding="utf-8")
+    import json
+    from knowledge_mcp.notes import lint_notes
+
+    out = lint_notes(
+        "apply",
+        json.dumps(
+            [{"op": "replace", "target": "书/delay/正文", "find": "癿", "repl": "的"}],
+            ensure_ascii=False,
+        ),
+    )
+    assert not out.startswith("失败"), out
+    assert "癿" not in (d / "正文.md").read_text(encoding="utf-8")
+    assert "癿" in (d / "旁.md").read_text(encoding="utf-8")
+
+
+def test_replace_empty_find_refused(kb):
+    plant_book(kb)
+    from knowledge_mcp.notes import lint_notes
+
+    out = lint_notes(
+        "apply",
+        '[{"op":"replace","target":"书/delay","find":"","repl":"的"}]',
+    )
+    assert out.startswith("失败")
+    assert "原书不可改" in (kb / "资料" / "书" / "delay" / "正文.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_scan_flags_glyph_suspect(kb):
+    plant_book(kb)
+    d = kb / "资料" / "书" / "delay"
+    (d / "正文.md").write_text("癿" * 5 + " 正文。\n", encoding="utf-8")
+    from knowledge_mcp.notes import lint_notes
+
+    out = lint_notes("scan")
+    assert "字形可疑" in out
+    assert "癿" in out
+
+
 def test_scan_does_not_delete_oversized(kb):
     d = kb / "资料" / "书" / "kit"
     d.mkdir(parents=True)

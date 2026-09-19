@@ -20,6 +20,7 @@ mcp = FastMCP(
         '超长篇用 块名#2 续下一窗，不要通读目录。够答就停。'
         '写笔记：preview → verify → create/update。预览会列冲突段；写入覆盖同名标题段并补短地图。'
         '入库写骨架地图，别名不足或问法仍是章名则未入完，按回报工作单走 kb_lint_notes apply 加厚。'
+        '库里有什么：kb_lint_notes scan 看在架。改错字：apply replace，不要直接改资料/。'
         '坏书走 kb_lint_notes：先 scan，再 apply withdraw 点名 书/<slug>，不要去删文件夹。'
         '自检不改本工具源码。'
     ),
@@ -66,7 +67,7 @@ def kb_write_note(
 
 @mcp.tool
 def kb_lint_notes(action: str = "scan", plan: Optional[str] = None) -> str:
-    """净化笔记、地图；scan 含书的未入完。先 scan 出清单，再 apply。笔记可删改合并；地图可改/标过期，**地图没有也能 update 新建**（target=书/<slug>/地图）；整本可 withdraw（target=书/<slug>）。动某一章会拒绝。"""
+    """净化。scan 先在架（书+笔记+入完状态）再列问题。apply：笔记删改合并；地图 update/stale（没有也能新建）；replace 显式 find→repl 改书或笔记 Markdown；整本 withdraw。delete 某一章会拒绝。"""
     return lint_notes(action, plan)
 
 

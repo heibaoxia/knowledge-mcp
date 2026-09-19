@@ -435,6 +435,7 @@ def write_note(markdown: str, action: str = "preview", target: str | None = None
         out = f"{wrote}\n身份：{ident}\n路径：资料/笔记/{path.name}\n"
         if covered:
             out += "覆盖：" + "、".join(covered) + "\n"
+        out += NOTE_RETRIEVE_HINT
         log_call("kb_write_note", True, action="create", ident=ident)
         return out
 
@@ -470,6 +471,7 @@ def write_note(markdown: str, action: str = "preview", target: str | None = None
         out = f"已更新\n身份：{note_ident}\n"
         if covered:
             out += "覆盖：" + "、".join(covered) + "\n"
+        out += NOTE_RETRIEVE_HINT
         log_call("kb_write_note", True, action="update", ident=note_ident)
         return out
 
@@ -484,6 +486,13 @@ def write_note(markdown: str, action: str = "preview", target: str | None = None
 
 
 SHORT_BODY = 40
+GLYPH_HINTS = (("癿", "的"), ("丌", "不"))
+GLYPH_MIN = 3
+FIND_CAP = 80
+NOTE_RETRIEVE_HINT = (
+    "检索与书同一套：kb_search 只回路标，kb_read 点名 笔记/<slug>。\n"
+    "入库多一步求证（书没有）。短地图已写在文末；俗称写进 ## 别名。\n"
+)
 
 
 def _note_path(ident: str) -> Path | None:
@@ -542,10 +551,54 @@ def _targets_of(item: dict) -> list[str]:
     return out
 
 
+def _chapter_file(ident: str) -> Path | None:
+    t = (ident or "").replace("\\", "/").strip().strip("/")
+    if t.startswith("资料/"):
+        t = t[len("资料/") :]
+    if not t.startswith("书/"):
+        return None
+    bits = t[2:].split("/")
+    slug, part = bits[0], "/".join(bits[1:])
+    book = dirs()["books"] / slug
+    if not part or not book.is_dir():
+        return None
+    if part in ("导读", "导读.md"):
+        p = book / "导读.md"
+        return p if p.is_file() else None
+    if part in ("地图", MAP_FILE):
+        p = book / MAP_FILE
+        return p if p.is_file() else None
+    for p in sorted(book.glob("*.md")):
+        if p.name in ("导读.md", MAP_FILE):
+            continue
+        with p.open(encoding="utf-8") as f:
+            first = f.readline()
+        if part in p.name or part in p.stem or part in first:
+            return p
+    return None
+
+
+def _replace_files(target: str) -> list[Path] | None:
+    slug = _book_slug(target)
+    if slug:
+        d = dirs()["books"] / slug
+        if not d.is_dir():
+            return None
+        return sorted(p for p in d.glob("*.md") if p.is_file())
+    note = _note_path(target)
+    if note is not None:
+        return [note] if note.is_file() else None
+    ch = _chapter_file(target)
+    if ch is not None:
+        return [ch]
+    return None
+
+
 def _scan() -> str:
     notes_dir = dirs()["notes"]
     files = sorted(notes_dir.glob("*.md")) if notes_dir.is_dir() else []
     flags: list[str] = []
+    shelf: list[str] = []
     titles: dict[str, list[str]] = {}
     for p in files:
         text = p.read_text(encoding="utf-8")
@@ -574,27 +627,35 @@ def _scan() -> str:
                 reasons.append(f"sources 死链 {s}")
         if title:
             titles.setdefault(title, []).append(ident)
+        shelf.append(f"- 《{title or p.stem}》 身份：{ident}")
         if reasons:
             flags.append(f"- {ident} 《{title or p.stem}》：{'；'.join(reasons)}")
     for title, ids in titles.items():
         if len(ids) > 1:
             flags.append(f"- {', '.join(ids)} 《{title}》：标题重复")
+    n_books = 0
     books = dirs()["books"]
     if books.is_dir():
         for guide in sorted(books.glob("*/导读.md")):
             d = guide.parent
+            n_books += 1
             ident = f"书/{d.name}/地图"
+            unfinished: list[str] = []
             mp = d / MAP_FILE
             if not mp.is_file():
                 flags.append(f"- {ident}：缺地图")
+                unfinished.append("缺地图")
             else:
                 for prob in map_problems(d):
                     flags.append(f"- {ident}：{prob}")
+                    unfinished.append(prob)
                 if map_thin(d):
                     flags.append(f"- {ident}：未入完 骨架未加厚")
+                    unfinished.append("骨架未加厚")
                 blocks = [p for p in d.glob("*.md") if p.name not in ("导读.md", MAP_FILE)]
                 if blocks and mp.stat().st_mtime < max(p.stat().st_mtime for p in blocks):
                     flags.append(f"- {ident}：早于重切")
+                    unfinished.append("早于重切")
             try:
                 gmeta, _ = split_frontmatter(guide.read_text(encoding="utf-8"))
             except OSError:
@@ -602,14 +663,44 @@ def _scan() -> str:
             title = str((gmeta or {}).get("title") or d.name)
             for reason in book_health(d):
                 flags.append(f"- 书/{d.name}：《{title}》：{reason}")
+                unfinished.append(reason)
+            for p in d.glob("*.md"):
+                if p.name in ("导读.md", MAP_FILE):
+                    continue
+                try:
+                    body = p.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                for bad, good in GLYPH_HINTS:
+                    n = body.count(bad)
+                    if n >= GLYPH_MIN:
+                        flags.append(
+                            f"- 书/{d.name}/{p.stem}：字形可疑 {bad}×{n}，"
+                            f"若实为「{good}」用 replace find={bad} repl={good}"
+                        )
+            nblocks = sum(
+                1
+                for p in d.glob("*.md")
+                if p.name not in ("导读.md", MAP_FILE)
+            )
+            status = "入完" if not unfinished else "未入完：" + "；".join(unfinished)
+            shelf.append(
+                f"- 《{title}》 身份：书/{d.name}  块 {nblocks}  {status}"
+            )
+    head = (
+        f"在架\n书 {n_books} 本，笔记 {len(files)} 条\n"
+        + ("\n".join(shelf) + "\n" if shelf else "（空）\n")
+    )
     if not flags:
-        out = "净化清单（只列不删）\n没有可疑项。\n"
+        out = head + "\n问题\n没有可疑项。\n"
     else:
         out = (
-            "净化清单（只列不删）\n"
+            head
+            + "\n问题\n"
             + "\n".join(flags)
             + "\n动手请 action=apply 提交 JSON 清单。"
             "笔记 delete/update/merge；地图 update/stale；"
+            "replace 改错字；"
             '退整本 {"op":"withdraw","target":"书/<slug>"}。不能退某一章。\n'
         )
     log_call("kb_lint_notes", True, action="scan", n=len(flags))
@@ -663,13 +754,36 @@ def _apply(plan_text: str) -> str:
                 log_call("kb_lint_notes", False, action="apply", step="退书")
                 return out
             continue
+        if op == "replace":
+            find = str(item.get("find") or "")
+            repl = item.get("repl")
+            repl = "" if repl is None else str(repl)
+            if not find or find == repl or len(find) > FIND_CAP:
+                out = fail(
+                    "净化-动手",
+                    "replace 要有非空 find、不等于 repl、长度不超过 80。",
+                    "库不变",
+                    '{"op":"replace","target":"书/<slug>","find":"癿","repl":"的"}',
+                )
+                log_call("kb_lint_notes", False, action="apply", step="replace")
+                return out
+            if _replace_files(str(item.get("target") or "")) is None:
+                out = fail(
+                    "净化-动手",
+                    f"replace 找不到目标：{item.get('target')}。",
+                    "库不变",
+                    "点名 书/<slug>、书/<slug>/<章> 或 笔记/<slug>。",
+                )
+                log_call("kb_lint_notes", False, action="apply", step="replace")
+                return out
+            continue
         for raw in _targets_of(item):
             if _touches_book(raw):
                 out = fail(
                     "净化-动手",
                     "清单碰到书，整单拒绝。",
                     "库不变",
-                    "从清单里拿掉书正文，只处理笔记和地图。退整本用 withdraw。",
+                    "从清单里拿掉书正文，只处理笔记和地图。退整本用 withdraw。改错字用 replace。",
                 )
                 log_call("kb_lint_notes", False, action="apply", step="护书")
                 return out
@@ -678,7 +792,7 @@ def _apply(plan_text: str) -> str:
                     "净化-动手",
                     f"身份不是笔记或地图：{raw}。整单拒绝。",
                     "库不变",
-                    "只许 笔记/<slug> 或 书/<slug>/地图。退整本用 withdraw。",
+                    "只许 笔记/<slug> 或 书/<slug>/地图。退整本用 withdraw。改错字用 replace。",
                 )
                 log_call("kb_lint_notes", False, action="apply", step="护书")
                 return out
@@ -689,7 +803,7 @@ def _apply(plan_text: str) -> str:
                 "净化-动手",
                 f"不认识的 op：{op}。整单拒绝。",
                 "库不变",
-                "笔记 op 用 delete / update / merge；地图用 update / stale；整本用 withdraw。",
+                "笔记 delete/update/merge；地图 update/stale；replace 改错字；整本 withdraw。",
             )
             log_call("kb_lint_notes", False, action="apply", step="op")
             return out
@@ -782,6 +896,20 @@ def _apply(plan_text: str) -> str:
                 path.write_text(str(md), encoding="utf-8")
                 invalidate()
                 done.append(f"改 笔记/{path.stem}")
+        elif op == "replace":
+            find = str(item.get("find") or "")
+            repl = item.get("repl")
+            repl = "" if repl is None else str(repl)
+            paths = _replace_files(str(item.get("target") or "")) or []
+            n = 0
+            for p in paths:
+                text = p.read_text(encoding="utf-8")
+                c = text.count(find)
+                if c:
+                    p.write_text(text.replace(find, repl), encoding="utf-8")
+                    n += c
+            invalidate()
+            done.append(f"替换 {item.get('target')} ×{n}")
         elif op == "merge":
             into = _note_path(str(item.get("into") or item.get("target") or ""))
             md = item.get("markdown") or ""
