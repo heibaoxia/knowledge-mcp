@@ -17,7 +17,7 @@
 - `docs/验收标准.md` Q1–Q14、W1–W20 不许改期望
 - 马尾辫 full：最短能用；先复用 `plant_book` / `_plant_map` / `invalidate`
 - TDD：先写失败测试，再改生产代码
-- 工作目录 `F:\project\knowledge`；`PYTHONPATH=mcp`；`.venv/Scripts/python.exe -m pytest mcp/tests -q`
+- 工作目录 `仓库根`；`PYTHONPATH=mcp`；`.venv/Scripts/python.exe -m pytest mcp/tests -q`
 - 同一分支：Task A pytest 1–6 全绿后再改阅读做 Task B
 
 ---
@@ -74,7 +74,7 @@ def test_search_three_schools_does_not_drag_mao(kb):
 ```
 
 - [ ] **Step 2: 跑测确认红**  
-  `F:\project\knowledge\.venv\Scripts\python.exe -m pytest mcp/tests/test_index.py::test_trigram_window_does_not_match_far_bigrams mcp/tests/test_index.py::test_parse_query_keeps_mudilun -q`  
+  `python -m pytest mcp/tests/test_index.py::test_trigram_window_does_not_match_far_bigrams mcp/tests/test_index.py::test_parse_query_keeps_mudilun -q`  
   Expected: FAIL（毛选仍中，或 目的论 被切成 目/论）
 
 - [ ] **Step 3: 最小实现**

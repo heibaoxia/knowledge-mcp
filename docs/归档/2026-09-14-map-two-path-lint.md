@@ -23,7 +23,7 @@
 - 净化动笔记和地图，不动书正文；不新开第七扇门
 - `convert_one` 成功写入后必须 `invalidate()`（补漏，不当新功能）
 - 给已有 4 本书补地图时禁止改原文（只新增 `地图.md`）
-- 现有约 91–93 项测试保持绿；工作目录 `F:\project\knowledge`；测试：`cd mcp && python -m pytest -q`
+- 现有约 91–93 项测试保持绿；工作目录 `仓库根`；测试：`cd mcp && python -m pytest -q`
 - 提交信息用中文短句；不要 `git checkout/reset/stash` 丢别人的改动
 - 马尾辫 full：最短能用、不新依赖、不预留抽象
 

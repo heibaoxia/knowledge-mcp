@@ -42,7 +42,7 @@ MCP 启动（stdio，可选）：
 .venv/Scripts/knowledge-mcp
 ```
 
-工作目录必须是仓库根（`F:\project\knowledge`），这样才找得到 `原始资料/`、`资料/`。
+工作目录必须是资料室根（有 `原始资料/`、`资料/` 的那个目录），或设 `KNOWLEDGE_ROOT`。
 
 ## 在 Agent 里接这个 MCP
 
@@ -54,23 +54,15 @@ Claude Desktop / Cursor / 其它 MCP 客户端，配置形状如下（按客户�
 {
   "mcpServers": {
     "knowledge": {
-      "command": "F:\\project\\knowledge\\.venv\\Scripts\\knowledge-mcp.exe",
+      "command": "knowledge-mcp",
       "args": [],
-      "cwd": "F:\\project\\knowledge"
+      "cwd": "/path/to/library"
     }
   }
 }
 ```
 
-如果客户端没有 `cwd`，用包装命令：
-
-```json
-{
-  "command": "F:\\project\\knowledge\\.venv\\Scripts\\python.exe",
-  "args": ["-m", "knowledge_mcp.server"],
-  "cwd": "F:\\project\\knowledge"
-}
-```
+如果客户端没有 cwd，用 python -m knowledge_mcp.server，工作目录仍是资料室根。
 
 接上之后 Agent 开场就能看见：
 

@@ -11,7 +11,7 @@
 
 ## 开门
 
-这场对话必须已经接上本机 `knowledge` MCP。若工具列表里没有 `kb_search`：告诉用户去启用该 MCP（命令指向仓库 venv 的 `knowledge-mcp`，工作目录 `F:\project\knowledge`），不要假装查过。
+优先跑 `knowledge` 命令（设好 `KNOWLEDGE_ROOT`）。若走 MCP：工具列表里要有 `kb_search`，否则告诉用户去启用，不要假装查过。
 
 ## 用法（短）
 

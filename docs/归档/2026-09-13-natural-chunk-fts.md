@@ -20,7 +20,7 @@
 - 导航块（文件名含 目录/目 录/索引/参考文献/术语表）正文不进索引
 - 书正文一个字不改（只改切点和文件名）
 - 现有测试保持绿；`test_search_body_token_is_not_a_hit` 改为「能回捞身份且路标无该正文」
-- 工作目录 `F:\project\knowledge`；测试：`cd mcp && python -m pytest -q`
+- 工作目录 `仓库根`；测试：`cd mcp && python -m pytest -q`
 - 提交信息用中文，短句
 
 ## File map
