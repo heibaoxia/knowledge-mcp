@@ -1,6 +1,6 @@
-# ziliaoshi（MCP 部分）
+# Knowledge Skill（代码包）
 
-本机资料室 MCP。规格见仓库根目录 `需求.md`，顺序见 `docs/计划.md`。
+给 Agent 用的本机资料室。**默认入口是命令 `knowledge`**，不必配 MCP。规格见仓库根 `需求.md`。MCP（`knowledge-mcp`）仍可用，闸门同一套。
 
 六扇门：检索（+阅读）、收件箱入库、指定入库、写笔记、净化、自检。正本是 Markdown，不用数据库。
 
@@ -24,7 +24,19 @@ python -m venv .venv
 .venv/Scripts/python -m pytest mcp/tests -q
 ```
 
-启动（stdio）：
+Skill 用法（推荐）：
+
+```bash
+export KNOWLEDGE_ROOT=/path/to/library   # Windows: set KNOWLEDGE_ROOT=D:\library
+knowledge init
+knowledge ingest
+knowledge lint scan
+knowledge search 你想了解什么
+```
+
+把仓库里 `skills/knowledge/` 拷到 Agent 的 skills 根。
+
+MCP 启动（stdio，可选）：
 
 ```bash
 .venv/Scripts/knowledge-mcp

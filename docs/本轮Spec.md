@@ -42,3 +42,12 @@ create/update 成功后写：检索与书同一套；入库多一步求证。索
 ## 完成线
 
 pytest：入库回报含操作流程/代码已做/你必做；scan 含在架；replace 全书与单章；delete 章仍拒；find 空拒绝；写笔记回报含检索与书同一套。
+
+## 6. Skill 发行（CLI，不靠 MCP）
+
+Skill 不能直接出现 `kb_*`。发行形态：同一套 Python 闸门，命令行 `knowledge`。Agent 跑命令；MCP 仍可选。
+
+- `knowledge init|search|read|ingest|note|lint|inspect`
+- `KNOWLEDGE_ROOT` 优先；否则 cwd 若已有 `资料/` 或 `原始资料/`
+- 入库找不到 convert.py 时，回退本机 `markitdown` 包
+- 闸门与 MCP 相同，不新开门

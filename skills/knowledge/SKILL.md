@@ -1,66 +1,44 @@
 ---
 name: knowledge
-description: 本机资料室。用户说「用知识库」「查库里的书」「资料室」、要按自己的书回答、或往库里丢 PDF/EPUB 时使用。先 kb_search 再 kb_read。没点名不要调 kb_*。
+description: Use when the user asks to use their local knowledge library, 资料室, 知识库, search books they ingested, ingest PDF/EPUB, or list what is in the library. Prefer the knowledge CLI. Do not open 资料/ and dump full text.
 ---
 
-# 知识库
+# Knowledge Skill
 
-闸门是本机 MCP `knowledge`（工具名 `kb_*`），不是这篇说明书。机器 id：`knowledge`。
+本机资料室。正本是 Markdown。闸门是命令 `knowledge`（同一套代码也可走 MCP `kb_*`，二选一）。
 
 ## 何时开门
 
-用户点名知识库 / 资料室 / 查库里的书，或明确要按入库的书来答。没点名：不要调 `kb_*`，当普通聊天。
+用户点名知识库 / 资料室 / 查库里的书 / 往库里丢书。没点名：当普通聊天。
 
-若工具列表里没有 `kb_search`：告诉用户在本 Harness 启用 MCP `knowledge`（命令指向仓库 venv 的 `knowledge-mcp`，工作目录 `F:\project\knowledge`），不要假装查过。
+若 `knowledge` 不在 PATH：让用户 `pip install -e ./mcp`，并设置 `KNOWLEDGE_ROOT` 为资料室目录。不要假装查过。
 
-## 怎么用
+## 命令
 
-1. **先 `kb_search`**，问一句人话。只回路标：哪几本书、建议读哪几块、三栏（两路都中 / 仅字面 / 仅语义）。**没有正文。**
-2. **再 `kb_read`**，从建议块里点名，身份形如 `书/<slug>/<章>`。一次最多 5 块；一块约 8000 字；一整次约 24000 字。太长用 `章名#2` 翻下一窗。
-3. 够答就停。不要按目录通读，不要直接打开 `资料/` 文件夹灌全文。
-4. 库里没有就说没有。负样本（库里没有的技术栈）应为空，不要硬凑。
+在资料室目录执行，或先 `export KNOWLEDGE_ROOT=...`：
 
-## 入库：写完骨架不算入完
+1. `knowledge search <一句话>` — 只回路标，无正文。先搜再读。
+2. `knowledge read 书/<slug>/<章>` — 一次可多个身份。单窗 8000，整次 24000。超长用 `章名#2`。
+3. `knowledge ingest` — 收件箱 `原始资料/`。有路径则只转那些文件。
+4. `knowledge lint scan` — **在架**（库里有什么）+ 问题。
+5. `knowledge note preview|verify|create|update --file note.md`
+6. `knowledge lint apply --plan '[{"op":"replace","target":"书/<slug>","find":"癿","repl":"的"}]'`
+7. `knowledge inspect`
 
-人把 PDF/EPUB/MOBI 放进 `原始资料/`，再 `kb_ingest_inbox`（收件箱全部）或 `kb_ingest_files`（点名源文件路径，不是书名）。
+够答就停。不要按目录通读，不要打开 `资料/` 灌全文。
 
-入库回报里有**操作流程**：代码已做 / 你必做。照着做完才算入完。入库只写六段骨架地图；薄骨架不算入完。按工作单加厚：
+## 入库
 
-- 「能解决什么」改成**读者问法**（3–8 条，每条 ≤40 字），不是章名
-- 「别名」至少 3 条：`<专名 ≥2 字> → 书/<slug>/<已存在的块名>`，不许拿公共词表凑
-- 「不解决什么」加 1–4 条库里**其它书**才有的问法
-- 走 `kb_lint_notes(action=apply)`，plan 里 `{"op":"update","target":"书/<slug>/地图","markdown":"<整份地图>"}`；地图不存在也能这样新建
-- 别名与问法由你编——工具只给清单和校验，不代写
+回报里有操作流程：代码已做切块和骨架地图；你必做加厚（读者问法 + ≥3 别名），走 `knowledge lint apply` 更新 `书/<slug>/地图`。骨架不算入完。
 
-加厚后 `kb_lint_notes scan` 不再报该书「骨架未加厚」，才算入完。
+## 写笔记
 
-## 写笔记：先看冲突段
-
-`create` / `update` 前先 `preview` → `verify`（相符 / 部分不符 / 库中无 / 非事实）。说「相符」必须先成功 `kb_read` 过依据。
-
-- `preview` 会列**冲突段候选**：其它笔记里与本稿同名的二级/三级标题。有这一栏就先看，别硬写。
-- `create` 写入后，其它笔记里**同名标题段**的正文会被换成新稿的，节首标 `> 已被 笔记/<新slug> 覆盖`。YAML 标题相同且双方都没有二/三级标题：不新开，改为更新旧条。只是检索相似、标题不同：不改旧条。
-- 写入会补短地图并失效索引。
-
-## 书架 / 库里有什么
-
-用户问「库里有什么」：`kb_lint_notes scan`，看开头「在架」。不要打开 `资料/` 灌目录。
-
-## 改错字 / 洁癖
-
-scan 若报字形可疑，或人指定错字：`kb_lint_notes apply` 一条
-`{"op":"replace","target":"书/<slug>","find":"癿","repl":"的"}`。
-映射由你认，工具不猜。不要直接改磁盘。不要 `delete` 某一章。
-
-## 退书
-
-`kb_lint_notes` 先 `scan`，再 `apply` `withdraw`，点名 `书/<slug>`。不要删文件夹、不要删某一章。
+`preview` → `verify` → `create`/`update`。相符必须先 `knowledge read` 过依据。检索与书同一套，入库多求证。
 
 ## 不要做
 
-- 没点名就调用资料室
-- 把路标当正文、或编造库里没有的内容
-- 入库写完骨架就报「入完」，不走工作单加厚
-- 绕开 `preview` 的冲突段栏直接写笔记
+- 没点名就开资料室
+- 把路标当正文，或编造库里没有的内容
+- 入库只写骨架就报入完
+- 不经 `lint apply` 直接改 `资料/` 里的书
 - 为了「只留一本」把相关的第二本书藏起来
-- 不经 replace 直接改 `资料/` 里的书

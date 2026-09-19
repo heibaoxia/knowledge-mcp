@@ -2,7 +2,7 @@
 
 机器 id：`knowledge`（文件夹 `skills/knowledge/`）。对人仍叫知识库。
 
-> 给人点名启用。闸门在 MCP，不在本文。
+> 给人点名启用。闸门是 `knowledge` 命令（或可选 MCP `kb_*`），不在本文。
 > 上级：`需求.md`。正文与规范根 `skills/knowledge/SKILL.md` 同一实质。
 
 ## 何时用

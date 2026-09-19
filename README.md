@@ -1,22 +1,63 @@
-# ziliaoshi
+# Knowledge Skill
 
-一个专门为 Agent 提供专业知识的 MCP，可以自己打造这资料库。
+给 Agent 用的本机资料室。正本是 Markdown。不是给人点的笔记软件，不是 RAG。
 
-本机知识库：Markdown 当正本，通过 MCP 暴露六扇门 —— 检索、阅读、入库、写笔记、净化、自检。
-不给人的笔记软件用，不做 RAG，不把向量库当正本。
+GitHub 仓库目前叫 `ziliaoshi`。对外技能名：**knowledge**。命令：`knowledge`。MCP 可选。
 
-## 怎么用
+## 别人怎么用（打开就能跑）
 
-1. 把 PDF / EPUB / MOBI 丢进 `原始资料/`
-2. 让 Agent 调「收件箱入库」，源文件转成 Markdown 进 `资料/书/<slug>/`，原件归档
-3. 之后 Agent 只靠抬头检索、点名才读正文；书入库后不改
+需要 Python 3.11+。
 
-## 文档
+```bash
+git clone https://github.com/heibaoxia/ziliaoshi.git
+cd ziliaoshi
+python -m venv .venv
+# Windows: .venv\Scripts\python -m pip install -e ./mcp
+# Unix:
+.venv/bin/python -m pip install -e ./mcp
+```
 
-- 现行规格：`需求.md`
-- 白话步骤：`docs/功能流程.md`
-- 写代码前先读：`AGENTS.md`
-- **怎么接到 Agent**：`mcp/README.md`
+建自己的库目录（不要和代码仓库混也可以）：
+
+```bash
+export KNOWLEDGE_ROOT=/path/to/my-library   # Windows: set KNOWLEDGE_ROOT=D:\library
+knowledge init
+```
+
+把 PDF / EPUB / MOBI 放进 `$KNOWLEDGE_ROOT/原始资料/`，然后：
+
+```bash
+knowledge ingest
+knowledge lint scan          # 在架 = 库里有什么
+knowledge search 你想了解什么
+knowledge read 书/<slug>/<章>
+```
+
+把 `skills/knowledge/` 拷到本机 Skill 目录（Claude Code / Codex / 其它 Agent 的 skills 根）。Agent 会跑上面这些命令，不需要再配 MCP。
+
+可选：语义检索去硅基流动开 Key，环境变量 `KNOWLEDGE_EMBED_KEY`。没有 Key 也能搜，字面检索照常，向量走本地哈希兜底。
+
+可选 MCP：`knowledge-mcp`（stdio），配置见 `mcp/README.md`。和 CLI 是同一套闸门。
+
+## 依赖（pip 已写进 mcp/pyproject.toml）
+
+- Python ≥ 3.11
+- `pyyaml`、`markitdown`、`fastmcp`（MCP 入口用）
+
+入库优先用本机 markitdown 脚本；没有脚本就用已安装的 `markitdown` 包。
+
+## 六件事
+
+| 命令 | 干什么 |
+|---|---|
+| `knowledge search` | 只回路标，无正文 |
+| `knowledge read` | 点名读块 |
+| `knowledge ingest` | 收书、切块、骨架地图 + 操作流程 |
+| `knowledge note` | 笔记：preview → verify → 写入 |
+| `knowledge lint` | 书架 / 加厚地图 / replace 改错字 / 退书 |
+| `knowledge inspect` | 自检，不改源码 |
+
+闸门在代码里：检索不带正文、书不能按章删、入库骨架不算入完。
 
 ## 许可
 

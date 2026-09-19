@@ -9,7 +9,13 @@ def repo_root() -> Path:
     env = os.environ.get("KNOWLEDGE_ROOT")
     if env:
         return Path(env).resolve()
-    return Path(__file__).resolve().parents[2]
+    cwd = Path.cwd()
+    if (cwd / "资料").is_dir() or (cwd / "原始资料").is_dir():
+        return cwd.resolve()
+    here = Path(__file__).resolve().parents[2]
+    if (here / "资料").is_dir() or (here / "需求.md").is_file():
+        return here
+    return cwd.resolve()
 
 
 def dirs() -> dict[str, Path]:

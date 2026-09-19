@@ -50,31 +50,42 @@ def run_markitdown(src: Path, out_dir: Path) -> Path:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     script = convert_script()
-    if not script.is_file():
-        nl = chr(10)
-        where = nl + "  " + (nl + "  ").join(str(x) for x in _convert_candidates())
-        raise RuntimeError(
-            "找不到 markitdown 转换脚本。用 KNOWLEDGE_MARKITDOWN 指向 convert.py，"
-            "当前找过：" + where
+    dest = out_dir / (src.stem + ".md")
+    if script.is_file():
+        r = subprocess.run(
+            [sys.executable, str(script), str(src), "--output-dir", str(out_dir)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
-    r = subprocess.run(
-        [sys.executable, str(script), str(src), "--output-dir", str(out_dir)],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if r.returncode != 0:
-        raise RuntimeError((r.stderr or r.stdout or "markitdown 失败").strip()[:400])
-    lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
-    if lines:
-        printed = Path(lines[-1])
-        if printed.is_file():
-            return printed
-    cand = out_dir / (src.stem + ".md")
-    if cand.is_file():
-        return cand
-    raise RuntimeError("转换没有产出 Markdown")
+        if r.returncode != 0:
+            raise RuntimeError((r.stderr or r.stdout or "markitdown 失败").strip()[:400])
+        lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
+        if lines:
+            printed = Path(lines[-1])
+            if printed.is_file():
+                return printed
+        if dest.is_file():
+            return dest
+    try:
+        from markitdown import MarkItDown
+
+        result = MarkItDown().convert(str(src))
+        text = getattr(result, "text_content", None) or str(result)
+        dest.write_text(text, encoding="utf-8")
+        return dest
+    except Exception as e:
+        if not script.is_file():
+            nl = chr(10)
+            where = nl + "  " + (nl + "  ").join(str(x) for x in _convert_candidates())
+            raise RuntimeError(
+                "找不到 markitdown 转换脚本，包转换也失败："
+                + str(e)[:200]
+                + "。用 KNOWLEDGE_MARKITDOWN 指向 convert.py，当前找过："
+                + where
+            ) from e
+        raise RuntimeError("转换没有产出 Markdown") from e
 
 
 def slugify(name: str) -> str:
