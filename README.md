@@ -2,15 +2,16 @@
 
 给 Agent 用的本机资料室。正本是 Markdown。不是给人点的笔记软件，不是 RAG。
 
-GitHub 仓库目前叫 `ziliaoshi`。对外技能名：**knowledge**。命令：`knowledge`。MCP 可选。
+仓库：https://github.com/heibaoxia/knowledge-skill  
+技能名：**knowledge**。命令：`knowledge`。MCP 可选。
 
 ## 别人怎么用（打开就能跑）
 
 需要 Python 3.11+。
 
 ```bash
-git clone https://github.com/heibaoxia/ziliaoshi.git
-cd ziliaoshi
+git clone https://github.com/heibaoxia/knowledge-skill.git
+cd knowledge-skill
 python -m venv .venv
 # Windows: .venv\Scripts\python -m pip install -e ./mcp
 # Unix:
