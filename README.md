@@ -2,16 +2,16 @@
 
 给 Agent 用的本机资料室。正本是 Markdown。不是给人点的笔记软件，不是 RAG。
 
-仓库：https://github.com/heibaoxia/knowledge-skill  
-技能名：**knowledge**。命令：`knowledge`。MCP 可选。
+仓库：https://github.com/heibaoxia/knowledge-mcp  
+这是**引擎**（命令 `knowledge`，MCP 可选）。给人点的入口 Skill 会另开瘦仓库。
 
 ## 别人怎么用（打开就能跑）
 
 需要 Python 3.11+。
 
 ```bash
-git clone https://github.com/heibaoxia/knowledge-skill.git
-cd knowledge-skill
+git clone https://github.com/heibaoxia/knowledge-mcp.git
+cd knowledge-mcp
 python -m venv .venv
 # Windows: .venv\Scripts\python -m pip install -e ./mcp
 # Unix:
