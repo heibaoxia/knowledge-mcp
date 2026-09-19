@@ -323,3 +323,117 @@ def test_verdict_swapped_after_verify_refused(kb):
     out = write_note(draft("相符", [CHAPTER]), action="create")
     assert out.startswith("失败")
     assert notes_of(kb) == []
+
+
+def _commit(md: str) -> str:
+    from knowledge_mcp.notes import write_note
+
+    write_note(md, action="preview")
+    assert not write_note(md, action="verify").startswith("失败")
+    out = write_note(md, action="create")
+    assert not out.startswith("失败"), out
+    return out
+
+
+def test_create_invalidates_index(kb):
+    from knowledge_mcp.retrieve import search
+
+    _commit(draft("非事实"))
+    out = search("我的拖延对策")
+    assert "笔记/" in out
+    assert "路标" in out
+
+
+def test_create_appends_note_map_skeleton(kb):
+    _commit(draft("非事实"))
+    text = notes_of(kb)[0].read_text(encoding="utf-8")
+    assert "## 能解决什么" in text
+    assert "## 别名" in text
+    assert "## 依据块" in text
+    assert "笔记/" in text
+
+
+def test_preview_lists_heading_conflicts(kb):
+    from knowledge_mcp.notes import write_note
+
+    old = (
+        "---\ntitle: 旧对策\ntype: 笔记\nintro: 以前的办法。\n---\n\n"
+        "# 旧对策\n\n## 课题分离\n\n旧的说法。\n"
+    )
+    (kb / "资料" / "笔记" / "old-way.md").write_text(old, encoding="utf-8")
+    md = (
+        "---\ntitle: 新对策\ntype: 笔记\nintro: 新的办法。\nverify: 非事实\n---\n\n"
+        "# 新对策\n\n## 课题分离\n\n新的说法，更准。\n"
+    )
+    out = write_note(md, action="preview")
+    assert "课题分离" in out
+    assert "冲突" in out
+
+
+def test_same_heading_overlays_old_section(kb):
+    old = (
+        "---\ntitle: 旧对策\ntype: 笔记\nintro: 以前的办法。\n---\n\n"
+        "# 旧对策\n\n## 课题分离\n\n旧的说法。\n\n## 其它\n\n不动。\n"
+    )
+    (kb / "资料" / "笔记" / "old-way.md").write_text(old, encoding="utf-8")
+    md = (
+        "---\ntitle: 新对策\ntype: 笔记\nintro: 新的办法。\nverify: 非事实\n---\n\n"
+        "# 新对策\n\n## 课题分离\n\n新的说法，更准。\n"
+    )
+    _commit(md)
+    old_text = (kb / "资料" / "笔记" / "old-way.md").read_text(encoding="utf-8")
+    assert "新的说法，更准" in old_text
+    assert "旧的说法" not in old_text
+    assert "不动" in old_text
+    assert "已被 笔记/" in old_text
+    assert len(notes_of(kb)) >= 2
+
+
+def test_same_title_no_headings_updates_instead_of_create(kb):
+    (kb / "资料" / "笔记" / "old-same.md").write_text(
+        "---\ntitle: 我的拖延对策\ntype: 笔记\nintro: 自己用过的办法。\n---\n\n"
+        "# 我的拖延对策\n\n先拆成很小的一步。\n",
+        encoding="utf-8",
+    )
+    _commit(draft("非事实", body="先拆成很小的一步。后来改了。"))
+    notes = notes_of(kb)
+    assert len(notes) == 1
+    text = notes[0].read_text(encoding="utf-8")
+    assert "后来改了" in text
+
+
+def test_similar_but_different_headings_do_not_touch_old(kb):
+    old = (
+        "---\ntitle: 旧对策\ntype: 笔记\nintro: 以前的办法。\n---\n\n"
+        "# 旧对策\n\n## 早起\n\n六点起床。\n"
+    )
+    (kb / "资料" / "笔记" / "old-way.md").write_text(old, encoding="utf-8")
+    md = (
+        "---\ntitle: 新对策\ntype: 笔记\nintro: 新的办法。\nverify: 非事实\n---\n\n"
+        "# 新对策\n\n## 课题分离\n\n别人的事别管。\n"
+    )
+    _commit(md)
+    old_text = (kb / "资料" / "笔记" / "old-way.md").read_text(encoding="utf-8")
+    assert old_text == old
+
+
+def test_windowed_read_counts_as_chapter_read(kb):
+    plant_book(kb)
+    (kb / "检修" / "calls.jsonl").write_text(
+        json.dumps(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "door": "kb_read",
+                "ok": True,
+                "target": CHAPTER + "#2",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    from knowledge_mcp.notes import write_note
+
+    md = draft("相符", [CHAPTER])
+    write_note(md, action="preview")
+    assert not write_note(md, action="verify").startswith("失败")

@@ -387,6 +387,71 @@ def test_inbox_writes_skeleton_map(kb, monkeypatch):
     assert "缺地图" not in out
 
 
+THIN_BOOK_MD = (
+    "# 苔原纪略\n\n合成的书。\n\n"
+    "## 第一章 潮线怎么定\n\n潮线正文若干字。\n\n"
+    "## 第二章 旧账怎么翻\n\n旧账正文若干字。\n"
+)
+
+
+def _ingest_thin_book(kb, monkeypatch):
+    _patch_convert(monkeypatch, THIN_BOOK_MD)
+    drop_source(kb, "taiyuan.epub")
+    from knowledge_mcp.ingest import ingest_inbox
+
+    out = ingest_inbox()
+    d = next(p for p in (kb / "资料" / "书").iterdir() if p.is_dir())
+    return out, d
+
+
+def test_inbox_skeleton_map_has_alias_section_but_is_thin(kb, monkeypatch):
+    from knowledge_mcp.index import map_problems, map_thin
+
+    out, d = _ingest_thin_book(kb, monkeypatch)
+    assert not out.startswith("失败")
+    text = (d / "地图.md").read_text(encoding="utf-8")
+    assert "## 别名" in text
+    assert map_problems(d) == []
+    assert map_thin(d)
+    assert "未入完" in out
+    assert "编地图" in out
+
+
+def test_thickened_map_is_not_thin_and_scan_clears(kb, monkeypatch):
+    from knowledge_mcp.index import map_problems, map_thin, parse_map
+    from knowledge_mcp.notes import lint_notes
+
+    _out, d = _ingest_thin_book(kb, monkeypatch)
+    mp = d / "地图.md"
+    assert map_thin(d)
+    scan = lint_notes("scan")
+    assert f"书/{d.name}/地图" in scan
+    assert "骨架未加厚" in scan
+
+    text = mp.read_text(encoding="utf-8")
+    parsed = parse_map(text)
+    block = parsed["chapters"][0]
+    text = text.replace(
+        "\n".join(f"- {s}" for s in parsed["solves"]),
+        "\n".join(
+            f"- {q}"
+            for q in (
+                "潮位总在变该按哪个月读",
+                "旧账翻不清该从哪一页起手",
+                "船期一拖再拖怎么办",
+            )
+        ),
+    )
+    text += "\n".join(
+        f"- {a} → 书/{d.name}/{block}" for a in ("苔原", "潮线", "旧账")
+    ) + "\n"
+    mp.write_text(text, encoding="utf-8")
+
+    assert map_problems(d) == []
+    assert map_thin(d) == []
+    assert "骨架未加厚" not in lint_notes("scan")
+
+
 def test_convert_one_calls_invalidate(kb, monkeypatch):
     _patch_convert(monkeypatch)
     called = []

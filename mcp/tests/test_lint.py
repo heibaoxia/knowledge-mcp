@@ -277,6 +277,43 @@ def test_delete_note_invalidates_index(kb):
     assert "笔记/gone" not in after
 
 
+def test_apply_creates_missing_map(kb):
+    plant_book(kb)
+    d = kb / "资料" / "书" / "delay"
+    assert not (d / "地图.md").exists()
+    import json
+    from knowledge_mcp.notes import lint_notes
+
+    out = lint_notes(
+        "apply",
+        json.dumps(
+            [{"op": "update", "target": "书/delay/地图", "markdown": GOOD_MAP}],
+            ensure_ascii=False,
+        ),
+    )
+    assert not out.startswith("失败"), out
+    assert (d / "地图.md").is_file()
+    assert "拖延心理学" in (d / "地图.md").read_text(encoding="utf-8")
+
+
+def test_apply_bad_new_map_leaves_no_file(kb):
+    plant_book(kb)
+    d = kb / "资料" / "书" / "delay"
+    import json
+    from knowledge_mcp.notes import lint_notes
+
+    bad = GOOD_MAP.replace("书/delay/正文", "书/delay/没有这一章")
+    out = lint_notes(
+        "apply",
+        json.dumps(
+            [{"op": "update", "target": "书/delay/地图", "markdown": bad}],
+            ensure_ascii=False,
+        ),
+    )
+    assert out.startswith("失败")
+    assert not (d / "地图.md").exists()
+
+
 def test_scan_does_not_delete_oversized(kb):
     d = kb / "资料" / "书" / "kit"
     d.mkdir(parents=True)

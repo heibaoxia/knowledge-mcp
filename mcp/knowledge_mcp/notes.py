@@ -3,17 +3,24 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
 
 from knowledge_mcp.errors import fail
-from knowledge_mcp.index import MAP_FILE, ident_exists, invalidate, map_problems
+from knowledge_mcp.index import (
+    MAP_FILE,
+    ident_exists,
+    invalidate,
+    map_problems,
+    map_thin,
+)
 from knowledge_mcp.ingest import book_health, slugify, uniquify, withdraw_book
 from knowledge_mcp.log import guarded, log_call, read_calls
 from knowledge_mcp.paths import dirs
-from knowledge_mcp.retrieve import _ident_of, search, split_frontmatter
+from knowledge_mcp.retrieve import _ident_of, _parse_target, _split_part, search, split_frontmatter
 
 VERDICTS = ("相符", "部分不符", "库中无", "非事实")
 WINDOW_CALLS = 100
@@ -110,8 +117,20 @@ def _exists(ident: str) -> bool:
     return False
 
 
+def _base_ident(ident: str) -> str:
+    """剥掉 #n / @偏移，只留章。#1 与不带 # 等价。"""
+    kind, slug, extra = _parse_target(ident or "")
+    if kind == "书" and slug and extra:
+        name, _win, _sec, _off = _split_part(extra)
+        return f"书/{slug}/{name}"
+    if kind == "笔记" and slug:
+        return f"笔记/{slug}"
+    return (ident or "").replace("\\", "/").strip()
+
+
 def _read_recent(ident: str) -> bool:
     """最近 100 条或 24 小时内成功 kb_read 过这个身份吗（先到为准）。"""
+    want = _base_ident(ident)
     now = datetime.now(timezone.utc)
     for i, rec in enumerate(reversed(read_calls())):
         if i >= WINDOW_CALLS:
@@ -122,12 +141,10 @@ def _read_recent(ident: str) -> bool:
             return False
         if age > WINDOW_SECONDS:
             return False
-        if (
-            rec.get("door") == "kb_read"
-            and rec.get("ok") is True
-            and _ident_of(str(rec.get("target") or ""), rec.get("part")) == ident
-        ):
-            return True
+        if rec.get("door") == "kb_read" and rec.get("ok") is True:
+            got = _ident_of(str(rec.get("target") or ""), rec.get("part"))
+            if _base_ident(got) == want:
+                return True
     return False
 
 
@@ -194,6 +211,117 @@ def _is_book_target(target: str | None) -> bool:
     return t.startswith("书/") or "/书/" in t or t.startswith("资料/书")
 
 
+HEAD_RE = re.compile(r"^(#{2,3})\s+(.+?)\s*$", re.M)
+HEAD_PUNCT = re.compile(r"[《》「」\"'：:、．.\s]+")
+MAP_HEADS = {"能解决什么", "别名", "依据块", "不解决什么", "章名", "建议从哪读"}
+
+
+def _norm_heading(s: str) -> str:
+    return HEAD_PUNCT.sub("", s or "")
+
+
+def _split_sections(md: str) -> tuple[str, list[tuple[str, str, str]]]:
+    matches = list(HEAD_RE.finditer(md or ""))
+    if not matches:
+        return md or "", []
+    prefix = md[: matches[0].start()]
+    secs: list[tuple[str, str, str]] = []
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(md)
+        secs.append((m.group(1), m.group(2).strip(), md[m.end() : end]))
+    return prefix, secs
+
+
+def _conflict_report(rest: str) -> str:
+    _prefix, secs = _split_sections(rest or "")
+    keys = {_norm_heading(h) for _hs, h, _b in secs if _norm_heading(h)}
+    if not keys:
+        return ""
+    notes = dirs()["notes"]
+    if not notes.is_dir():
+        return ""
+    lines: list[str] = []
+    for p in sorted(notes.glob("*.md")):
+        _op, osecs = _split_sections(p.read_text(encoding="utf-8"))
+        hits = [oh for _hs, oh, _b in osecs if _norm_heading(oh) in keys]
+        if hits:
+            lines.append(f"- 笔记/{p.stem}：" + "、".join(f"## {h}" for h in hits))
+    if not lines:
+        return ""
+    return "冲突段候选：\n" + "\n".join(lines) + "\n"
+
+
+def _ensure_note_map(text: str, slug: str, title: str) -> str:
+    if re.search(r"^##\s+能解决什么\s*$", text, re.M):
+        return text
+    _prefix, secs = _split_sections(text)
+    heads = [h[:40] for _hs, h, _b in secs if h not in MAP_HEADS][:3]
+    solves = heads or [((title or "本条笔记")[:40])]
+    ident = f"笔记/{slug}"
+    extra = (
+        "\n## 能解决什么\n"
+        + "\n".join(f"- {s}" for s in solves)
+        + "\n\n## 别名\n\n## 依据块\n"
+        + "\n".join(f"- {s} → {ident}" for s in solves)
+        + "\n"
+    )
+    return text.rstrip() + "\n" + extra
+
+
+def _find_same_title_plain(title: str) -> Path | None:
+    want = _norm_heading(title)
+    if not want:
+        return None
+    notes = dirs()["notes"]
+    if not notes.is_dir():
+        return None
+    for p in sorted(notes.glob("*.md")):
+        old_title, _intro, _meta, rest = _fields(p.read_text(encoding="utf-8"))
+        if _norm_heading(old_title) != want:
+            continue
+        if HEAD_RE.search(rest or ""):
+            continue
+        return p
+    return None
+
+
+def _overlay_others(skip_stem: str, new_text: str, new_ident: str) -> list[str]:
+    _prefix, secs = _split_sections(new_text)
+    new_secs = {
+        _norm_heading(h): body for _hs, h, body in secs if _norm_heading(h)
+    }
+    if not new_secs:
+        return []
+    notes = dirs()["notes"]
+    if not notes.is_dir():
+        return []
+    done: list[str] = []
+    for p in sorted(notes.glob("*.md")):
+        if p.stem == skip_stem:
+            continue
+        old = p.read_text(encoding="utf-8")
+        opx, osecs = _split_sections(old)
+        if not osecs:
+            continue
+        changed = False
+        rebuilt = opx
+        for hashes, heading, body in osecs:
+            key = _norm_heading(heading)
+            rebuilt += f"{hashes} {heading}"
+            if key and key in new_secs:
+                nb = new_secs[key].lstrip("\n")
+                rebuilt += f"\n> 已被 {new_ident} 覆盖\n{nb}"
+                if not nb.endswith("\n"):
+                    rebuilt += "\n"
+                changed = True
+            else:
+                rebuilt += body if body.startswith("\n") else "\n" + body
+        if changed:
+            p.write_text(rebuilt, encoding="utf-8")
+            done.append(f"笔记/{p.stem}")
+    return done
+
+
 def _render(title: str, intro: str, meta: dict, rest: str) -> str:
     head = dict(meta)
     head["title"] = title
@@ -220,11 +348,14 @@ def write_note(markdown: str, action: str = "preview", target: str | None = None
 
     if action in ("preview", "search"):
         log_call("kb_write_note", True, action="preview", key=key)
+        conflicts = _conflict_report(rest)
+        extra = ("\n" + conflicts) if conflicts else ""
         return (
             "写笔记预览（还没写入）\n"
             f"标题：{title or '（缺）'}\n"
             "先看类似条目；然后 action=verify 写清 verify（相符 / 部分不符 / 库中无 / 非事实）和 sources，再 action=create 新建，或 action=update 并指定 笔记/<slug>。\n\n"
             + sim
+            + extra
         )
 
     if _is_book_target(target):
@@ -288,11 +419,23 @@ def write_note(markdown: str, action: str = "preview", target: str | None = None
     if action == "create":
         notes = dirs()["notes"]
         notes.mkdir(parents=True, exist_ok=True)
-        base = slugify(title) or ("n-" + key[:8])
-        path = uniquify(notes / f"{base}.md")
-        path.write_text(_render(title, intro, meta, rest), encoding="utf-8")
-        out = f"已记下\n身份：笔记/{path.stem}\n路径：资料/笔记/{path.name}\n"
-        log_call("kb_write_note", True, action="create", ident=f"笔记/{path.stem}")
+        twin = _find_same_title_plain(title)
+        if twin is not None:
+            path = twin
+            wrote = "已更新"
+        else:
+            base = slugify(title) or ("n-" + key[:8])
+            path = uniquify(notes / f"{base}.md")
+            wrote = "已记下"
+        ident = f"笔记/{path.stem}"
+        text = _ensure_note_map(_render(title, intro, meta, rest), path.stem, title)
+        path.write_text(text, encoding="utf-8")
+        covered = _overlay_others(path.stem, text, ident)
+        invalidate()
+        out = f"{wrote}\n身份：{ident}\n路径：资料/笔记/{path.name}\n"
+        if covered:
+            out += "覆盖：" + "、".join(covered) + "\n"
+        log_call("kb_write_note", True, action="create", ident=ident)
         return out
 
     if action == "update":
@@ -319,9 +462,15 @@ def write_note(markdown: str, action: str = "preview", target: str | None = None
             )
             log_call("kb_write_note", False, action="update", step="点名")
             return out
-        path.write_text(_render(title, intro, meta, rest), encoding="utf-8")
-        out = f"已更新\n身份：笔记/{slug}\n"
-        log_call("kb_write_note", True, action="update", ident=f"笔记/{slug}")
+        note_ident = f"笔记/{slug}"
+        text = _ensure_note_map(_render(title, intro, meta, rest), slug, title)
+        path.write_text(text, encoding="utf-8")
+        covered = _overlay_others(slug, text, note_ident)
+        invalidate()
+        out = f"已更新\n身份：{note_ident}\n"
+        if covered:
+            out += "覆盖：" + "、".join(covered) + "\n"
+        log_call("kb_write_note", True, action="update", ident=note_ident)
         return out
 
     out = fail(
@@ -441,6 +590,8 @@ def _scan() -> str:
             else:
                 for prob in map_problems(d):
                     flags.append(f"- {ident}：{prob}")
+                if map_thin(d):
+                    flags.append(f"- {ident}：未入完 骨架未加厚")
                 blocks = [p for p in d.glob("*.md") if p.name not in ("导读.md", MAP_FILE)]
                 if blocks and mp.stat().st_mtime < max(p.stat().st_mtime for p in blocks):
                     flags.append(f"- {ident}：早于重切")
@@ -541,6 +692,30 @@ def _apply(plan_text: str) -> str:
                 "笔记 op 用 delete / update / merge；地图用 update / stale；整本用 withdraw。",
             )
             log_call("kb_lint_notes", False, action="apply", step="op")
+            return out
+    for item in plan:
+        if str(item.get("op") or "").lower() != "update":
+            continue
+        mp = _map_path(str(item.get("target") or ""))
+        if mp is None:
+            continue
+        md = str(item.get("markdown") or "")
+        old = mp.read_text(encoding="utf-8") if mp.is_file() else None
+        mp.parent.mkdir(parents=True, exist_ok=True)
+        mp.write_text(md, encoding="utf-8")
+        probs = map_problems(mp.parent)
+        if old is None:
+            mp.unlink(missing_ok=True)
+        else:
+            mp.write_text(old, encoding="utf-8")
+        if probs:
+            out = fail(
+                "净化-动手",
+                "地图不合格：" + "；".join(probs),
+                "库不变",
+                "先改到身份都存在再 apply。",
+            )
+            log_call("kb_lint_notes", False, action="apply", step="地图")
             return out
     done: list[str] = []
     for item in plan:

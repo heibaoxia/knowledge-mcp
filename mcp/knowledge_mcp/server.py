@@ -18,7 +18,8 @@ mcp = FastMCP(
         '先 kb_search 拿路标（无正文，三栏：两路都中 / 仅字面 / 仅语义），再 kb_read 点名建议块。不要打开资料/灌全文。'
         '一次最多 5 块，每块约 8000 字，整次约 24000 字。'
         '超长篇用 块名#2 续下一窗，不要通读目录。够答就停。'
-        '写笔记：preview → verify → create/update。'
+        '写笔记：preview → verify → create/update。预览会列冲突段；写入覆盖同名标题段并补短地图。'
+        '入库写骨架地图，别名不足或问法仍是章名则未入完，按回报工作单走 kb_lint_notes apply 加厚。'
         '坏书走 kb_lint_notes：先 scan，再 apply withdraw 点名 书/<slug>，不要去删文件夹。'
         '自检不改本工具源码。'
     ),
@@ -43,13 +44,13 @@ def kb_read(
 
 @mcp.tool
 def kb_ingest_inbox() -> str:
-    """收件箱入库：把「原始资料」文件夹里现有的 PDF/EPUB/MOBI 全部转换成书。入库后每本书要有合格地图才算入完；缺地图时回报里会给「编地图」工作单，编好走 kb_lint_notes apply（地图不存在也能 update 新建）。"""
+    """收件箱入库：把「原始资料」文件夹里现有的 PDF/EPUB/MOBI 全部转换成书。入库写六段骨架地图；别名不足或「能解决什么」仍是章名则未入完，回报给「编地图」工作单，编好走 kb_lint_notes apply。"""
     return ingest_inbox()
 
 
 @mcp.tool
 def kb_ingest_files(paths: list[str]) -> str:
-    """指定入库：只转换这些源文件路径。指定的是文件，不是书名。找不到文件不要编书。入库后同样要有合格地图；缺地图时照回报里的工作单编，走 kb_lint_notes apply。"""
+    """指定入库：只转换这些源文件路径。指定的是文件，不是书名。找不到文件不要编书。同样写骨架地图；薄地图未入完，照回报工作单加厚，走 kb_lint_notes apply。"""
     return ingest_named(paths)
 
 
@@ -59,7 +60,7 @@ def kb_write_note(
     action: str = "preview",
     target: Optional[str] = None,
 ) -> str:
-    """写笔记。只能进笔记，不能当书。先 action=preview 看类似条目，再 action=verify（稿上 verify：相符 / 部分不符 / 库中无 / 非事实），再 create 或 update；相符 / 部分不符 必须先成功 kb_read 过 sources 里的身份。"""
+    """写笔记。只能进笔记，不能当书。先 action=preview 看类似条目和冲突段，再 action=verify（稿上 verify：相符 / 部分不符 / 库中无 / 非事实），再 create 或 update；相符 / 部分不符 必须先成功 kb_read 过 sources 里的身份（章#n 算读过该章）。写入补短地图、覆盖其它笔记同名标题段、失效索引。"""
     return write_note(markdown, action, target)
 
 

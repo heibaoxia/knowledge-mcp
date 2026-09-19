@@ -796,6 +796,31 @@ def map_problems(book_dir: Path) -> list[str]:
     return probs
 
 
+def map_thin(book_dir: Path) -> list[str]:
+    """骨架地图够不够厚：别名不足、或「能解决什么」还是章名。缺地图交给 map_problems。"""
+    book_dir = Path(book_dir)
+    mp = book_dir / MAP_FILE
+    if not mp.is_file():
+        return []
+    try:
+        parsed = parse_map(mp.read_text(encoding="utf-8"))
+    except OSError:
+        return []
+    probs: list[str] = []
+    if len([a for a in (parsed.get("aliases") or []) if a.strip()]) < 3:
+        probs.append("别名不足")
+    names = [c.strip() for c in (parsed.get("chapters") or []) if c.strip()]
+    for p in sorted(book_dir.glob("*.md")):
+        if p.name in SKIP_FILES or is_nav_name(p.name):
+            continue
+        name = _block_name(p)
+        names += [name, core_chapter_name(name)]
+    solves = [s.strip() for s in (parsed.get("solves") or []) if s.strip()]
+    if solves and names and all(any(c.startswith(s) for c in names) for s in solves):
+        probs.append("能解决什么仍是章名")
+    return probs
+
+
 def map_index_text(text: str) -> str:
     """地图进索引的正文：内容段 + 别名，不含「章名」段。
 

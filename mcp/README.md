@@ -64,12 +64,12 @@ Claude Desktop / Cursor / 其它 MCP 客户端，配置形状如下（按客户�
 
 | 工具 | 干什么 |
 |---|---|
-| `kb_search` | 只回路标（含建议块），无正文。`query` / `q` 都行。中文问句按整句+标点切+二字片打抬头 |
-| `kb_read` | 单块：`target` + `part`；多块：`targets` 字符串列表（`书/<slug>/<章>`、`笔记/<slug>`）。最多 5 块、单块 8000 字、整次 24000 字；缺一块其它照给；整本或没身份整单拒绝 |
-| `kb_ingest_inbox` | 收件箱里全部 PDF/EPUB/MOBI |
-| `kb_ingest_files` | 只转给出的**文件路径**，不是书名 |
-| `kb_write_note` | 先 `action=preview`，再 `verify`（稿上 `verify`：相符 / 部分不符 / 库中无 / 非事实），再 `create` / `update`。相符 / 部分不符必须先成功 `kb_read` 过 `sources` |
-| `kb_lint_notes` | 先 `scan`，再 `apply`；碰书整单拒绝 |
+| `kb_search` | 只回路标（含建议块），无正文。两路都跑，三栏：两路都中 / 仅字面 / 仅语义。最多 5 条。`query` / `q` 都行 |
+| `kb_read` | 单块：`target` + `part`；多块：`targets` 字符串列表（`书/<slug>/<章>`、`笔记/<slug>`）。最多 5 块、单块 8000 字、整次 24000 字。超长用 `章名#2`；可 `#节名` / `@偏移`。缺一块其它照给；整本或没身份整单拒绝 |
+| `kb_ingest_inbox` | 收件箱里全部 PDF/EPUB/MOBI。写六段骨架地图；薄地图未入完，回报附编地图工作单 |
+| `kb_ingest_files` | 只转给出的**文件路径**，不是书名。同样要加厚才算入完 |
+| `kb_write_note` | 先 `action=preview`（含冲突段候选），再 `verify`（相符 / 部分不符 / 库中无 / 非事实），再 `create` / `update`。相符 / 部分不符必须先成功 `kb_read` 过 `sources`。写入补短地图、覆盖同名标题段 |
+| `kb_lint_notes` | 先 `scan`（含骨架未加厚），再 `apply`；地图可 update 新建；整本 `withdraw` 点名 `书/<slug>`；碰某一章整单拒绝 |
 | `kb_inspect` | 最近调用/失败；`proposal` 只写入 `检修/提案/` |
 
 人把书丢进 `原始资料/`，对 Agent 说用这个库即可。不要让 Agent 直接打开 `资料/` 灌全文。

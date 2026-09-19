@@ -20,6 +20,7 @@ from knowledge_mcp.index import (
     invalidate,
     is_nav_name,
     map_problems,
+    map_thin,
 )
 from knowledge_mcp.log import guarded, log_call
 from knowledge_mcp.paths import dirs
@@ -647,7 +648,7 @@ def write_skeleton_map(book_dir: Path, title: str, slug: str, chapters: list[str
         + "\n".join(f"- {e}" for e in evidence)
         + "\n\n## 章名\n"
         + chap_lines
-        + "\n"
+        + "\n\n## 别名\n"
     )
     mp.write_text(text, encoding="utf-8")
 
@@ -728,6 +729,7 @@ def convert_one(src: Path) -> dict:
         "map_target": f"书/{slug}/地图",
         "blocks": names,
         "map_ok": not map_problems(book_dir),
+        "map_thin": map_thin(book_dir),
         "health": book_health(book_dir),
     }
 
@@ -736,20 +738,23 @@ WORK_ORDER_SHOWN = 30
 
 
 def _map_work_order(item: dict) -> str:
-    """缺地图时交还给 Agent 的「编地图」工作单：写哪、什么格式、走哪扇门。代码不代编内容。"""
+    """地图不厚时交还给 Agent 的「编地图」工作单：写哪、加厚成什么样、走哪扇门。"""
     slug = item["slug"]
     blocks = list(item.get("blocks") or [])
     out = [
-        f"编地图 书/{slug}/地图（{item['title']}）——不算入完，按下面补：",
+        f"编地图 书/{slug}/地图（{item['title']}）——不算入完，照现库已入完的书加厚：",
         f"· 写哪：资料/书/{slug}/地图.md（没有就新建）",
         "· 走哪扇门：kb_lint_notes(action=apply, plan=…)，plan 里放一条 "
         f'{{"op":"update","target":"书/{slug}/地图","markdown":"<整份地图>"}}'
         "。地图不存在也能这样新建；校验不过会回滚。",
         "· frontmatter：title 与 导读.md 的 title 一字不差；type: 地图；"
         f"book: 书/{slug}；generated: true",
-        "· 必填段：能解决什么 3–8 条（每条 ≤40 字）；不解决什么 1–5 条；"
-        "建议从哪读（身份）；依据块（条数 ≥ 能解决什么）；章名（已机械补上，别删）；"
-        f"别名一行一条 <专名 ≥2 字> → 书/{slug}/<已存在的块名>",
+        "· 能解决什么：3–8 条、每条 ≤40 字，写成读者会问的话，不是章名",
+        "· 不解决什么：1–5 条，留住 PyTorch 负样本，再加 1–4 条库里其它书才有的问法",
+        "· 建议从哪读：点真正该先读的块，不必与依据块一一对应",
+        "· 依据块：每条问法 → 一个活身份（书/<slug>/<块名>）",
+        "· 章名：已机械补上，别删",
+        f"· 别名：至少 3 条 <专名 ≥2 字> → 书/{slug}/<已存在的块名>，不许公共词表",
     ]
     if blocks:
         shown = blocks[:WORK_ORDER_SHOWN]
@@ -771,14 +776,17 @@ def ingest_sources(files: list[Path], step_prefix: str) -> str:
         except Exception as e:
             failed.append((src, str(e), i))
     lines = []
-    missing = 0
     unfinished: list[str] = []
+    need_work_order: list[dict] = []
     for item in ok:
         lines.append(f"- {item['title']} → 资料/书/{item['slug']}/导读.md ；源文件 {item['archive']}")
         reasons: list[str] = []
         if not item.get("map_ok"):
-            missing += 1
             reasons.append("缺地图")
+        if item.get("map_thin"):
+            reasons.append("骨架未加厚")
+        if reasons:
+            need_work_order.append(item)
         for r in item.get("health") or []:
             if r not in reasons:
                 reasons.append(r)
@@ -786,11 +794,10 @@ def ingest_sources(files: list[Path], step_prefix: str) -> str:
             unfinished.append(f"未入完 书/{item['slug']}：{'；'.join(reasons)}")
     if not failed:
         out = f"入库完成\n成功 {len(ok)} 本\n" + "\n".join(lines) + "\n"
-        if missing:
-            out += f"\n缺地图 {missing} 本（源文件已归档，不算入完）：\n"
-            for item in ok:
-                if not item.get("map_ok"):
-                    out += _map_work_order(item) + "\n"
+        if need_work_order:
+            out += f"\n地图要加厚 {len(need_work_order)} 本（源文件已归档，不算入完）：\n"
+            for item in need_work_order:
+                out += _map_work_order(item) + "\n"
         if unfinished:
             out += "\n".join(unfinished) + "\n"
         return out
